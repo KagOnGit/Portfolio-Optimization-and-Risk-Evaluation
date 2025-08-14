@@ -1,13 +1,11 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { fetchQuoteSnapshot, Quote } from '@/lib/prices';
 
-type TickerItem = {
+type Quote = {
   symbol: string;
-  price: number | null;
+  last: number | null;
   changePct: number | null;
-  error?: string;
 };
 
 const DEFAULT_TICKERS = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'TLT', 'GLD', 'BTC-USD'];
@@ -19,68 +17,53 @@ function classByChange(changePct: number | null) {
   return 'text-neutral-400';
 }
 
-export default function TopTickerRibbon({
-  symbols = DEFAULT_TICKERS,
-  refreshMs = 60_000,
-  speedSec = 30,
-}: {
-  symbols?: string[];
-  refreshMs?: number;
-  speedSec?: number; // scroll duration in seconds
-}) {
-  const [rows, setRows] = useState<TickerItem[]>(
-    symbols.map((s) => ({ symbol: s.toUpperCase(), price: null, changePct: null }))
+export default function TopTickerRibbon({ symbols = DEFAULT_TICKERS, refreshMs = 30_000, speedSec = 40 }: { symbols?: string[]; refreshMs?: number; speedSec?: number }) {
+  const [quotes, setQuotes] = useState<Quote[]>(
+    symbols.map(s => ({ symbol: s.toUpperCase(), last: null, changePct: null }))
   );
-  const [err, setErr] = useState<string>('');
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  // Load quotes
-  async function load() {
+  async function fetchQuotes() {
     try {
-      setErr('');
-      const data = await fetchQuoteSnapshot(symbols);
-      const mapped: TickerItem[] = symbols.map((s) => {
-        const d: Quote | undefined = data[s.toUpperCase()];
-        if (!d) return { symbol: s.toUpperCase(), price: null, changePct: null, error: 'no data' };
-        return { symbol: s.toUpperCase(), price: d.last, changePct: d.changePct };
+      const res = await fetch('/api/prices/quote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols }),
       });
-      setRows(mapped);
-    } catch (e: any) {
-      setErr(e?.message || 'Ticker load error');
+      if (!res.ok) throw new Error(`Quote fetch failed: ${res.status}`);
+      const data = await res.json();
+      setQuotes(symbols.map(s => {
+        const d = data[s.toUpperCase()] || {};
+        return { symbol: s.toUpperCase(), last: d.last ?? null, changePct: d.changePct ?? null };
+      }));
+    } catch (e) {
+      console.warn('Ribbon fetch error', e);
     }
   }
 
   useEffect(() => {
-    load();
-    const id = setInterval(load, refreshMs);
+    fetchQuotes();
+    const id = setInterval(fetchQuotes, refreshMs);
     return () => clearInterval(id);
   }, [symbols.join(','), refreshMs]);
 
-  // Duplicate rows for smooth loop
-  const loopData = useMemo(() => [...rows, ...rows], [rows]);
+  // Duplicate quotes 3x for seamless infinite scroll
+  const loopData = useMemo(() => [...quotes, ...quotes, ...quotes], [quotes]);
 
   return (
-    <div className="sticky top-0 z-40 w-full border-b bg-white/85 backdrop-blur supports-[backdrop-filter]:bg-white/60 dark:bg-neutral-950/85 dark:supports-[backdrop-filter]:bg-neutral-950/60 overflow-hidden h-10">
+    <div className="sticky top-0 z-40 w-full border-b bg-white/85 dark:bg-neutral-950/85 overflow-hidden h-10">
       <div
         ref={containerRef}
         className="flex gap-6 whitespace-nowrap animate-ticker"
-        style={{
-          animation: `ticker ${speedSec}s linear infinite`,
-        }}
+        style={{ animation: `scrollTicker ${speedSec}s linear infinite` }}
       >
-        {loopData.map((item, idx) => {
-          const cls = classByChange(item.changePct);
-          const pct =
-            item.changePct == null ? '—' : `${(item.changePct >= 0 ? '+' : '')}${item.changePct.toFixed(2)}%`;
-          const price =
-            item.price == null
-              ? '—'
-              : item.symbol === 'BTC-USD'
-              ? `$${item.price.toLocaleString()}`
-              : item.price.toLocaleString();
+        {loopData.map((q, idx) => {
+          const cls = classByChange(q.changePct);
+          const pct = q.changePct == null ? '—' : `${q.changePct >= 0 ? '+' : ''}${q.changePct.toFixed(2)}%`;
+          const price = q.last == null ? '—' : (q.symbol === 'BTC-USD' ? `$${q.last.toLocaleString()}` : q.last.toLocaleString());
           return (
-            <div key={`${item.symbol}-${idx}`} className="flex items-center gap-1 text-sm">
-              <span className="font-medium text-neutral-700 dark:text-neutral-200">{item.symbol}</span>
+            <div key={`${q.symbol}-${idx}`} className="flex items-center gap-1 text-sm">
+              <span className="font-medium text-neutral-700 dark:text-neutral-200">{q.symbol}</span>
               <span className="text-neutral-500">•</span>
               <span className="tabular-nums text-neutral-800 dark:text-neutral-100">{price}</span>
               <span className={`tabular-nums ${cls}`}>{pct}</span>
@@ -88,18 +71,15 @@ export default function TopTickerRibbon({
           );
         })}
       </div>
-      {err && <div className="px-3 pb-2 text-xs text-red-600 dark:text-red-400">{err}</div>}
+
       <style jsx>{`
-        @keyframes ticker {
-          0% {
-            transform: translateX(0%);
-          }
-          100% {
-            transform: translateX(-50%);
-          }
+        @keyframes scrollTicker {
+          0% { transform: translateX(0%); }
+          100% { transform: translateX(-33.33%); }
         }
         .animate-ticker {
           display: inline-flex;
+          white-space: nowrap;
         }
       `}</style>
     </div>

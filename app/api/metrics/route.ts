@@ -9,31 +9,43 @@ export async function POST(req: Request) {
     const upper = (tickers as string[]).map(s => s.toUpperCase()).slice(0, 12);
 
     const series = await fetchHistory(upper);
-    // Simple composite: equal-weight portfolio of closes
-    // Align by common dates: find min length and align to the tail
-    const closeArrays = series.map(s => s.bars.map(b => b.close));
-    const minLen = Math.min(...closeArrays.map(a => a.length));
-    const aligned = closeArrays.map(a => a.slice(a.length - minLen));
 
-    // Equal-weighted portfolio close as average of normalized index
-    // Alternatively, compute average of returns — simpler for Week 2:
+    // Map closes for each ticker
+    const closeArrays = series.map(s => s.bars.map(b => b.close));
+
+    // Skip tickers with no valid closes
+    const validArrays = closeArrays.filter(arr => arr.length > 1);
+    if (validArrays.length === 0) {
+      return NextResponse.json({ error: 'No valid price data for tickers' }, { status: 500 });
+    }
+
+    // Align by minimum length
+    const minLen = Math.min(...validArrays.map(a => a.length));
+    const aligned = validArrays.map(a => a.slice(a.length - minLen));
+
+    // Convert closes to returns
     const returnsArrays = aligned.map(arr => closesToReturns(arr));
     const minR = Math.min(...returnsArrays.map(a => a.length));
+    if (minR === 0) {
+      return NextResponse.json({ error: 'Not enough data to compute returns' }, { status: 500 });
+    }
+
     const retAligned = returnsArrays.map(a => a.slice(a.length - minR));
 
+    // Equal-weighted portfolio returns
     const portReturns: number[] = [];
     for (let i = 0; i < minR; i++) {
       const avg = retAligned.reduce((acc, ar) => acc + ar[i], 0) / retAligned.length;
       portReturns.push(avg);
     }
 
-    // Risk metrics
+    // Compute risk metrics
     const metrics = {
       sharpe: +sharpe(portReturns).toFixed(3),
       sortino: +sortino(portReturns).toFixed(3),
       var: +histVaR(portReturns, 0.95).toFixed(4),
       cvar: +histCVaR(portReturns, 0.95).toFixed(4),
-      max_drawdown: 0.0 // placeholder; will compute drawdown properly next week
+      max_drawdown: 0.0 // placeholder; Week 3/4 can compute equity curve drawdown
     };
 
     return NextResponse.json(metrics);
@@ -42,7 +54,7 @@ export async function POST(req: Request) {
   }
 }
 
-// Keep GET for backward compatibility (optional)
+// Optional GET for backward compatibility
 export async function GET() {
   return NextResponse.json({ info: 'Use POST with { tickers } to compute real metrics.' });
 }
