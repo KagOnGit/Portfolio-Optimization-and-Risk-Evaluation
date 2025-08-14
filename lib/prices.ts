@@ -1,98 +1,91 @@
-// Free Stooq CSV fetchers + simple snapshot builder with robust fallbacks.
-// For U.S. tickers, Stooq uses `.us` suffix (e.g., spy.us, aapl.us).
-// For BTC-USD we use stooq btcusd for a simple last; if unavailable, we mock.
+import { fetchWithBackoff } from './backoff';
 
-export type Quote = {
-  last: number | null;
-  prevClose: number | null;
-  changePct: number | null;
-};
+export type PriceBar = { date: string; open: number; high: number; low: number; close: number; volume: number };
+export type Series = { symbol: string; bars: PriceBar[] };
+export type Quote = { last: number | null; prevClose: number | null; changePct: number | null };
 
-const STQ_BASE = 'https://stooq.com/q/l/';
 const STQ_DAILY = 'https://stooq.com/q/d/l/';
+const STQ_QUOTE = 'https://stooq.com/q/l/';
 
-// Map user symbol -> stooq symbol
-function toStooqSymbol(input: string): string {
+export function toStooqSymbol(input: string): string {
   const s = input.trim().toUpperCase();
   if (s === 'BTC-USD' || s === 'BTCUSD') return 'btcusd';
-  // If it already looks like stooq with .us, pass through
   if (/\.[a-z]{2,3}$/i.test(s)) return s.toLowerCase();
   return `${s.toLowerCase()}.us`;
 }
 
-// Fetch current quote (CSV last + previous close if available)
-async function fetchStooqQuoteCSV(stooqSymbol: string): Promise<Quote> {
-  // Lightweight quote endpoint: q/l/?s=spy.us,i=0  -> CSV: symbol,price,change,open,high,low,volume
-  // But reliability varies; as a fallback, fetch last two daily candles and compute.
-  try {
-    const url = `${STQ_BASE}?s=${encodeURIComponent(stooqSymbol)}&f=sd2t2ohlcv&h&e=csv`;
-    const res = await fetch(url, { cache: 'no-store' });
-    if (!res.ok) throw new Error(`stooq quote ${stooqSymbol} ${res.status}`);
-    const text = await res.text();
-    // Parse CSV header + first row
-    // symbol,date,time,open,high,low,close,volume
-    const lines = text.trim().split(/\r?\n/);
-    if (lines.length < 2) throw new Error('no rows');
-    const row = lines[1].split(',');
-    const close = parseFloat(row[6]);
-    if (Number.isFinite(close)) {
-      return { last: close, prevClose: null, changePct: null };
-    }
-    throw new Error('bad close');
-  } catch {
-    // Fallback to last two daily candles
-    try {
-      const url = `${STQ_DAILY}?s=${encodeURIComponent(stooqSymbol)}&i=d`;
-      const res = await fetch(url, { cache: 'no-store' });
-      if (!res.ok) throw new Error(`stooq daily ${stooqSymbol} ${res.status}`);
-      const text = await res.text();
-      // date,open,high,low,close,volume
-      const lines = text.trim().split(/\r?\n/);
-      if (lines.length < 3) throw new Error('not enough candles');
-      const last = lines[lines.length - 1].split(',').map((x) => x.trim());
-      const prev = lines[lines.length - 2].split(',').map((x) => x.trim());
-      const lastClose = parseFloat(last[4]);
-      const prevClose = parseFloat(prev[4]);
-      if (!Number.isFinite(lastClose) || !Number.isFinite(prevClose)) throw new Error('bad numbers');
-      const changePct = prevClose === 0 ? 0 : ((lastClose - prevClose) / prevClose) * 100;
-      return { last: lastClose, prevClose, changePct };
-    } catch {
-      return { last: null, prevClose: null, changePct: null };
-    }
+export async function fetchStooqDailyCSV(symbol: string): Promise<PriceBar[]> {
+  const sto = toStooqSymbol(symbol);
+  const url = `${STQ_DAILY}?s=${encodeURIComponent(sto)}&i=d`;
+  const res = await fetchWithBackoff(url, { cache: 'no-store' });
+  const text = await res.text();
+  const lines = text.trim().split(/\r?\n/);
+  const out: PriceBar[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const [date, open, high, low, close, volume] = lines[i].split(',').map(v => v.trim());
+    const c = parseFloat(close);
+    if (!Number.isFinite(c)) continue;
+    out.push({
+      date,
+      open: parseFloat(open),
+      high: parseFloat(high),
+      low: parseFloat(low),
+      close: c,
+      volume: parseFloat(volume)
+    });
   }
+  return out;
 }
 
-// MOCK if all else fails to keep ribbon stable
-const MOCK: Record<string, Quote> = {
-  'SPY': { last: 553.12, prevClose: 550.00, changePct: ((553.12 - 550) / 550) * 100 },
-  'QQQ': { last: 504.77, prevClose: 502.10, changePct: ((504.77 - 502.10) / 502.10) * 100 },
-  'AAPL': { last: 227.31, prevClose: 226.50, changePct: ((227.31 - 226.50) / 226.50) * 100 },
-  'MSFT': { last: 455.62, prevClose: 453.00, changePct: ((455.62 - 453.00) / 453.00) * 100 },
-  'TLT': { last: 93.41, prevClose: 93.90, changePct: ((93.41 - 93.90) / 93.90) * 100 },
-  'GLD': { last: 234.15, prevClose: 233.50, changePct: ((234.15 - 233.50) / 233.50) * 100 },
-  'BTC-USD': { last: 63_500, prevClose: 62_900, changePct: ((65_00 - 62_90) / 62_90) }, // harmless placeholder
-};
+export async function fetchHistory(symbols: string[]): Promise<Series[]> {
+  const results = await Promise.all(symbols.map(async s => {
+    const bars = await fetchStooqDailyCSV(s);
+    return { symbol: s.toUpperCase(), bars };
+  }));
+  return results;
+}
+
+export function closesToReturns(closes: number[]): number[] {
+  const r: number[] = [];
+  for (let i = 1; i < closes.length; i++) r.push(closes[i] / closes[i-1] - 1);
+  return r;
+}
 
 export async function fetchQuoteSnapshot(symbols: string[]): Promise<Record<string, Quote>> {
   const out: Record<string, Quote> = {};
-  await Promise.all(
-    symbols.map(async (sym) => {
-      const key = sym.toUpperCase();
+  await Promise.all(symbols.map(async sym => {
+    const sto = toStooqSymbol(sym);
+    try {
+      const url = `${STQ_QUOTE}?s=${encodeURIComponent(sto)}&f=sd2t2ohlcv&h&e=csv`;
+      const res = await fetchWithBackoff(url, { cache: 'no-store' });
+      const text = await res.text();
+      const lines = text.trim().split(/\r?\n/);
+      if (lines.length < 2) throw new Error('no rows');
+      const row = lines[1].split(',');
+      const close = parseFloat(row[6]);
+      if (Number.isFinite(close)) {
+        out[sym.toUpperCase()] = { last: close, prevClose: null, changePct: null };
+        return;
+      }
+      throw new Error('bad close');
+    } catch {
       try {
-        const sto = toStooqSymbol(sym);
-        const q = await fetchStooqQuoteCSV(sto);
-        if (q.last != null && q.changePct == null && q.prevClose != null) {
-          q.changePct = q.prevClose === 0 ? 0 : ((q.last - q.prevClose) / q.prevClose) * 100;
-        }
-        if (q.last == null && MOCK[key]) {
-          out[key] = MOCK[key];
+        const daily = await fetchStooqDailyCSV(sym);
+        if (daily.length >= 2) {
+          const last = daily[daily.length - 1].close;
+          const prev = daily[daily.length - 2].close;
+          out[sym.toUpperCase()] = {
+            last,
+            prevClose: prev,
+            changePct: prev === 0 ? 0 : ((last - prev) / prev) * 100
+          };
         } else {
-          out[key] = q;
+          out[sym.toUpperCase()] = { last: null, prevClose: null, changePct: null };
         }
       } catch {
-        out[key] = MOCK[key] || { last: null, prevClose: null, changePct: null };
+        out[sym.toUpperCase()] = { last: null, prevClose: null, changePct: null };
       }
-    })
-  );
+    }
+  }));
   return out;
 }
