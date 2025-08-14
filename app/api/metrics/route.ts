@@ -1,4 +1,3 @@
-// app/api/metrics/route.ts
 import { NextResponse } from 'next/server';
 import { sharpe, sortino, histVaR, histCVaR, maxDrawdown } from '@/lib/math';
 import { fetchHistory, closesToReturns } from '@/lib/prices';
@@ -9,20 +8,25 @@ export async function POST(req: Request) {
     const { tickers = ['SPY','QQQ','TLT'] } = body || {};
     const upper = (tickers as string[]).map(s => s.toUpperCase()).slice(0, 12);
 
-    const series = await fetchHistory(upper);
+    // Fetch history safely per ticker
+    const series = await Promise.all(
+      upper.map(async (s) => {
+        try {
+          const res = await fetchHistory([s]);
+          return res[0]; // fetchHistory returns array
+        } catch {
+          return { symbol: s, bars: [] };
+        }
+      })
+    );
 
-    const closeArrays = series.map(s => s.bars.map(b => b.close));
+    const closeArrays = series.map(s => s.bars.map(b => b.close)).filter(arr => arr.length > 1);
     if (!closeArrays.length) {
-      return NextResponse.json({ error: 'No price data for any ticker' }, { status: 400 });
+      return NextResponse.json({ error: 'No valid price data for any ticker' }, { status: 400 });
     }
 
-    const validArrays = closeArrays.filter(arr => arr.length > 1);
-    if (validArrays.length === 0) {
-      return NextResponse.json({ error: 'No valid price data for tickers' }, { status: 400 });
-    }
-
-    const minLen = Math.min(...validArrays.map(a => a.length));
-    const aligned = validArrays.map(a => a.slice(a.length - minLen));
+    const minLen = Math.min(...closeArrays.map(a => a.length));
+    const aligned = closeArrays.map(a => a.slice(a.length - minLen));
 
     const returnsArrays = aligned.map(arr => closesToReturns(arr));
     const minR = Math.min(...returnsArrays.map(a => a.length));
@@ -32,19 +36,18 @@ export async function POST(req: Request) {
 
     const retAligned = returnsArrays.map(a => a.slice(a.length - minR));
 
-    // Equal-weight portfolio returns
     const portReturns: number[] = [];
     for (let i = 0; i < minR; i++) {
       const avg = retAligned.reduce((acc, ar) => acc + ar[i], 0) / retAligned.length;
       portReturns.push(avg);
     }
 
-    // Build equity curve from returns (no rounding; format at UI)
+    // Equity curve
     const equityCurve: number[] = [];
-    let equity = 1;
+    let cumulative = 1;
     for (const r of portReturns) {
-      equity *= (1 + r);
-      equityCurve.push(equity);
+      cumulative *= 1 + r;
+      equityCurve.push(cumulative);
     }
 
     const metrics = {
@@ -61,7 +64,6 @@ export async function POST(req: Request) {
   }
 }
 
-// Optional GET for quick checks
 export async function GET() {
   return NextResponse.json({ info: 'Use POST with { tickers } to compute real metrics.' });
 }
