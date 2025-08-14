@@ -5,7 +5,6 @@ type Body = {
   method?: 'equal_weight' | 'min_var' | 'max_sharpe' | 'black_litterman';
 };
 
-// MOCK v1: equal-weight + mild tilt for non-equal methods
 export async function POST(req: Request) {
   let body: Body = {};
   try { body = await req.json(); } catch {}
@@ -13,11 +12,9 @@ export async function POST(req: Request) {
   const unique = Array.from(new Set(tickers.map(t => t.toUpperCase()))).slice(0, 12);
   const n = Math.max(1, unique.length);
 
-  if (n === 0) {
-    return NextResponse.json({ error: 'No tickers provided' }, { status: 400 });
-  }
+  if (n === 0) return NextResponse.json({ error: 'No tickers provided' }, { status: 400 });
 
-  let weights: Record<string, number> = {};
+  const weights: Record<string, number> = {};
   if (method === 'equal_weight') {
     const w = 1 / n;
     unique.forEach(t => { weights[t] = +w.toFixed(4); });

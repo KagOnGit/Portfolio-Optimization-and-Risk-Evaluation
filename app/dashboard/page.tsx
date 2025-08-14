@@ -49,12 +49,12 @@ export default function DashboardPage() {
     })();
   }, []);
 
-  const series = Array.from({length: 40}, (_,i)=>({x: 15*i, y: 20 + 2*i + Math.sin(i)*5}));
+  const series = Array.from({ length: 40 }, (_, i) => ({ x: 15 * i, y: 20 + 2 * i + Math.sin(i) * 5 }));
 
   return (
     <div className="p-6 grid grid-cols-12 gap-4">
       <div className="col-span-12 md:col-span-3">
-        <ControlPanel onRun={runOptimize}/>
+        <ControlPanel onRun={runOptimize} />
         <div className="mt-4 rounded-lg border p-4">
           <div className="text-sm font-medium mb-2">Weights</div>
           <pre className="text-xs overflow-auto max-h-60">{JSON.stringify(weights, null, 2)}</pre>
@@ -66,13 +66,13 @@ export default function DashboardPage() {
         ) : null}
       </div>
       <div className="col-span-12 md:col-span-9 space-y-4">
-        <ChartContainer title="Portfolio (demo)" series={series}/>
+        <ChartContainer title="Portfolio (demo)" series={series} />
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-          <KpiCard label="Sharpe" value={loading ? '—' : metrics?.sharpe ?? '—'}/>
-          <KpiCard label="Sortino" value={loading ? '—' : metrics?.sortino ?? '—'}/>
-          <KpiCard label="VaR(95%)" value={loading ? '—' : metrics?.var ?? '—'}/>
-          <KpiCard label="CVaR(95%)" value={loading ? '—' : metrics?.cvar ?? '—'}/>
-          <KpiCard label="Max DD" value={loading ? '—' : metrics?.max_drawdown ?? '—'}/>
+          <KpiCard label="Sharpe" value={loading ? '—' : metrics?.sharpe ?? '—'} />
+          <KpiCard label="Sortino" value={loading ? '—' : metrics?.sortino ?? '—'} />
+          <KpiCard label="VaR(95%)" value={loading ? '—' : metrics?.var ?? '—'} />
+          <KpiCard label="CVaR(95%)" value={loading ? '—' : metrics?.cvar ?? '—'} />
+          <KpiCard label="Max DD" value={loading ? '—' : metrics?.max_drawdown ?? '—'} />
         </div>
       </div>
     </div>
