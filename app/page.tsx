@@ -27,6 +27,17 @@ function toNumbers(values: Array<{ value: string } | { date: string; value: stri
   return out;
 }
 
+function calcRange(preset: '1Y'|'3Y'|'5Y'|'MAX') {
+  const today = new Date();
+  const end = today.toISOString().slice(0,10);
+  let start: string;
+  if (preset === '1Y') start = new Date(today.getFullYear()-1, today.getMonth(), today.getDate()).toISOString().slice(0,10);
+  else if (preset === '3Y') start = new Date(today.getFullYear()-3, today.getMonth(), today.getDate()).toISOString().slice(0,10);
+  else if (preset === '5Y') start = new Date(today.getFullYear()-5, today.getMonth(), today.getDate()).toISOString().slice(0,10);
+  else start = '1900-01-01';
+  return { start, end };
+}
+
 export default function DashboardPage() {
   const [weights, setWeights] = useState<Record<string, number>>({});
   const [metrics, setMetrics] = useState<Metrics | null>(null);
@@ -35,21 +46,8 @@ export default function DashboardPage() {
   const [error, setError] = useState<string>('');
   const [macro, setMacro] = useState<MacroMap>({});
 
-  // Preset and date range
   const [selectedPreset, setSelectedPreset] = useState<'1Y'|'3Y'|'5Y'|'MAX'>('1Y');
-
-  function calcRange(preset: '1Y'|'3Y'|'5Y'|'MAX') {
-    const today = new Date();
-    const end = today.toISOString().slice(0,10);
-    let start: string;
-    if (preset === '1Y') start = new Date(today.getFullYear()-1, today.getMonth(), today.getDate()).toISOString().slice(0,10);
-    else if (preset === '3Y') start = new Date(today.getFullYear()-3, today.getMonth(), today.getDate()).toISOString().slice(0,10);
-    else if (preset === '5Y') start = new Date(today.getFullYear()-5, today.getMonth(), today.getDate()).toISOString().slice(0,10);
-    else start = '1900-01-01';
-    return { start, end };
-  }
-
-  const [dateRange, setDateRange] = useState<{ start: string; end: string }>(() => calcRange('1Y'));
+  const [dateRange, setDateRange] = useState<{ start:string, end:string }>(() => calcRange('1Y'));
 
   function handlePresetClick(p: '1Y'|'3Y'|'5Y'|'MAX') {
     setSelectedPreset(p);
@@ -72,8 +70,11 @@ export default function DashboardPage() {
     }
   }
 
-  // Fetch metrics + equity curve
+  // Metrics + Equity Curve fetch with AbortController
   useEffect(() => {
+    const ctrl = new AbortController();
+    let mounted = true;
+
     (async () => {
       setLoading(true);
       setError('');
@@ -81,59 +82,84 @@ export default function DashboardPage() {
         const r = await fetch('/api/metrics', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tickers: ['SPY','QQQ','TLT'], start: dateRange.start, end: dateRange.end }),
+          body: JSON.stringify({ tickers:['SPY','QQQ','TLT'], start: dateRange.start, end: dateRange.end }),
+          signal: ctrl.signal
         });
-        if (!r.ok) throw new Error(`Metrics failed: ${r.status}`);
-        const d = await r.json();
-        setMetrics(d.metrics ?? d);
-        if (Array.isArray(d.equityCurve)) {
-          setEquityCurve(d.equityCurve.map((val:number, idx:number) => ({ x: idx, y: val })));
+        if (!r.ok) {
+          if (mounted) setError(`Metrics failed: ${r.status}`);
+          return;
         }
-      } catch (e: any) {
-        setError(e.message || 'Metrics error');
+        const d = await r.json();
+        if (!mounted) return;
+        setMetrics(d.metrics ?? d);
+        if (Array.isArray(d.equityCurve) && d.equityCurve.length>0) {
+          setEquityCurve(d.equityCurve.map((val:number, idx:number) => ({ x: idx, y: val })));
+        } else {
+          setEquityCurve([{x:0,y:1},{x:1,y:1}]);
+        }
+      } catch(e:any) {
+        if (e?.name==='AbortError') return;
+        if (mounted) setError(e.message || 'Metrics error');
       } finally {
-        setLoading(false);
+        if (mounted) setLoading(false);
       }
     })();
+
+    return () => {
+      mounted=false;
+      ctrl.abort();
+    };
   }, [dateRange.start, dateRange.end]);
 
-  // Load macro (optional date-range binding)
+  // Macro fetch
   useEffect(() => {
+    const ctrl = new AbortController();
+    let mounted = true;
+
     (async () => {
       try {
         const resp = await fetch('/api/macro/fred', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ series: ['CPIAUCSL','UNRATE','FEDFUNDS'], start: dateRange.start, end: dateRange.end }),
+          body: JSON.stringify({ series:['CPIAUCSL','UNRATE','FEDFUNDS'], start:dateRange.start, end:dateRange.end }),
+          signal: ctrl.signal
         });
         if (!resp.ok) return console.warn('Macro load failed', resp.status);
         const j = await resp.json();
+        if (!mounted) return;
         const map: MacroMap = {};
         if (Array.isArray(j?.data)) {
           for (const s of j.data) {
             const id = String(s?.id || '');
-            const arr = Array.isArray(s?.observations) ? toNumbers(s.observations) : [];
+            const arr = Array.isArray(s?.observations)? toNumbers(s.observations):[];
             if (id) map[id] = arr;
           }
           setMacro(map);
         }
-      } catch (e) { console.warn('Macro load error', e); }
+      } catch(e:any) {
+        if (e?.name==='AbortError') return;
+        console.warn('Macro load error', e);
+      }
     })();
+
+    return () => { mounted=false; ctrl.abort(); };
   }, [dateRange.start, dateRange.end]);
 
-  const sparkline = (arr: number[]) => arr.slice(-30);
+  const sparkline = (arr:number[])=>arr.slice(-30);
 
   return (
     <div className="min-h-screen">
       <TopTickerRibbon />
 
-      {/* Preset Buttons */}
+      {/* Preset buttons */}
       <div className="mx-auto max-w-screen-2xl p-4 flex gap-3">
-        {(['1Y','3Y','5Y','MAX'] as const).map(v => (
+        {(['1Y','3Y','5Y','MAX'] as const).map(v=>(
           <button
             key={v}
-            className={`px-3 py-1 rounded ${selectedPreset === v ? 'bg-blue-600 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100'}`}
-            onClick={() => handlePresetClick(v)}
+            className={`px-3 py-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
+              selectedPreset===v?'bg-blue-600 text-white':'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-100'
+            }`}
+            onClick={()=>handlePresetClick(v)}
           >
             {v}
           </button>
@@ -147,26 +173,33 @@ export default function DashboardPage() {
             <div className="text-sm font-medium mb-2">Weights</div>
             <pre className="text-xs overflow-auto max-h-60">{JSON.stringify(weights,null,2)}</pre>
           </div>
-          {error && <div className="mt-4 rounded-lg border border-red-500 p-3 text-sm text-red-600 bg-red-50 dark:bg-red-950">{error}</div>}
+          {error && (
+            <div className="mt-4 rounded-lg border border-red-500 p-3 text-sm text-red-600 bg-red-50 dark:bg-red-950">
+              {error}
+            </div>
+          )}
         </div>
 
         <div className="col-span-12 md:col-span-9 space-y-4">
-          {/* Equity Curve Chart */}
-          <ChartContainer title="Portfolio Equity Curve" series={loading ? [{x:0,y:1},{x:1,y:1}] : equityCurve} />
+          <ChartContainer title="Portfolio Equity Curve" series={loading?[{x:0,y:1},{x:1,y:1}]:equityCurve}/>
 
-          {/* KPIs */}
+          {/* KPI cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-            <KpiCard label="Sharpe" value={loading ? '—' : metrics?.sharpe ?? '—'} />
-            <KpiCard label="Sortino" value={loading ? '—' : metrics?.sortino ?? '—'} />
-            <KpiCard label="VaR(95%)" value={loading ? '—' : metrics?.var ?? '—'} />
-            <KpiCard label="CVaR(95%)" value={loading ? '—' : metrics?.cvar ?? '—'} />
-            <KpiCard label="Max DD" value={loading ? '—' : metrics?.max_drawdown ?? '—'} />
+            <KpiCard label="Sharpe" value={loading?'—':metrics?.sharpe ?? '—'} />
+            <KpiCard label="Sortino" value={loading?'—':metrics?.sortino ?? '—'} />
+            <KpiCard label="VaR(95%)" value={loading?'—':metrics?.var ?? '—'} />
+            <KpiCard label="CVaR(95%)" value={loading?'—':metrics?.cvar ?? '—'} />
+            <KpiCard label="Max DD" value={loading?'—':metrics?.max_drawdown ?? '—'} />
           </div>
 
-          {/* Macro Sparklines */}
+          {/* Macro sparklines */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
-            {['CPIAUCSL','UNRATE','FEDFUNDS'].map(id => (
-              <ChartContainer key={id} title={id} series={macro[id] ? sparkline(macro[id]).map((y,i)=>({x:i,y})) : []} />
+            {['CPIAUCSL','UNRATE','FEDFUNDS'].map(id=>(
+              <ChartContainer
+                key={id}
+                title={id}
+                series={macro[id]?sparkline(macro[id]).map((y,i)=>({x:i,y})):[]}
+              />
             ))}
           </div>
         </div>
