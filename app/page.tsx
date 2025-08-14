@@ -1,4 +1,3 @@
-// app/page.tsx
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -62,9 +61,10 @@ export default function DashboardPage() {
         });
         if (!r.ok) throw new Error(`Metrics failed: ${r.status}`);
         const d = await r.json();
-        setMetrics(d.metrics ?? d); // backward compatible
+        setMetrics(d.metrics ?? d); // Support old response format
         if (Array.isArray(d.equityCurve)) {
-          setEquityCurve(d.equityCurve.map((val: number, idx: number) => ({ x: idx, y: val })));
+          const points = d.equityCurve.map((val: number, idx: number) => ({ x: idx, y: val }));
+          setEquityCurve(points);
         }
       } catch (e: any) {
         setError(e.message || 'Metrics error');
@@ -74,7 +74,7 @@ export default function DashboardPage() {
     })();
   }, []);
 
-  // Load macro (FRED)
+  // Load macro
   useEffect(() => {
     (async () => {
       try {
@@ -125,7 +125,7 @@ export default function DashboardPage() {
         </div>
 
         <div className="col-span-12 md:col-span-9 space-y-4">
-          {/* New: real equity curve */}
+          {/* NEW: Equity curve chart */}
           <ChartContainer title="Portfolio Equity Curve" series={equityCurve} />
 
           {/* KPIs */}
