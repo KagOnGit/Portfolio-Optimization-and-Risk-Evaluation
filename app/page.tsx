@@ -1,3 +1,4 @@
+// app/page.tsx
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -30,6 +31,7 @@ function toNumbers(values: Array<{ value: string } | { date: string; value: stri
 export default function DashboardPage() {
   const [weights, setWeights] = useState<Record<string, number>>({});
   const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [equityCurve, setEquityCurve] = useState<{ x: number; y: number }[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>('');
   const [macro, setMacro] = useState<MacroMap>({});
@@ -49,7 +51,7 @@ export default function DashboardPage() {
     }
   }
 
-  // Load metrics (real, via POST)
+  // Load metrics + equity curve
   useEffect(() => {
     (async () => {
       try {
@@ -60,7 +62,10 @@ export default function DashboardPage() {
         });
         if (!r.ok) throw new Error(`Metrics failed: ${r.status}`);
         const d = await r.json();
-        setMetrics(d);
+        setMetrics(d.metrics ?? d); // backward compatible
+        if (Array.isArray(d.equityCurve)) {
+          setEquityCurve(d.equityCurve.map((val: number, idx: number) => ({ x: idx, y: val })));
+        }
       } catch (e: any) {
         setError(e.message || 'Metrics error');
       } finally {
@@ -76,17 +81,14 @@ export default function DashboardPage() {
         const resp = await fetch('/api/macro/fred', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          // Optionally pass a date range: { series: [...], start: '2015-01-01' }
           body: JSON.stringify({ series: ['CPIAUCSL', 'UNRATE', 'FEDFUNDS'] }),
         });
         if (!resp.ok) {
-          // Don’t surface macro errors in the main error box; keep UI usable
           console.warn('Macro load failed', resp.status);
           return;
         }
         const j = await resp.json();
         const map: MacroMap = {};
-        // Expecting shape: {  [ { id, observations: [ {date,value}, ... ] }, ... ] }
         if (Array.isArray(j?.data)) {
           for (const s of j.data) {
             const id = String(s?.id || '');
@@ -101,14 +103,7 @@ export default function DashboardPage() {
     })();
   }, []);
 
-  // Example portfolio demo series (placeholder chart)
-  const series = Array.from({ length: 40 }, (_, i) => ({
-    x: 15 * i,
-    y: 20 + 2 * i + Math.sin(i) * 5,
-  }));
-
-  // Example sparkline function for macro values
-  const sparkline = (arr: number[]) => arr.slice(-30); // last 30 points
+  const sparkline = (arr: number[]) => arr.slice(-30);
 
   return (
     <div className="min-h-screen">
@@ -118,7 +113,9 @@ export default function DashboardPage() {
           <ControlPanel onRun={runOptimize} />
           <div className="mt-4 rounded-lg border p-4">
             <div className="text-sm font-medium mb-2">Weights</div>
-            <pre className="text-xs overflow-auto max-h-60">{JSON.stringify(weights, null, 2)}</pre>
+            <pre className="text-xs overflow-auto max-h-60">
+              {JSON.stringify(weights, null, 2)}
+            </pre>
           </div>
           {error ? (
             <div className="mt-4 rounded-lg border border-red-500 p-3 text-sm text-red-600 bg-red-50 dark:bg-red-950">
@@ -128,8 +125,10 @@ export default function DashboardPage() {
         </div>
 
         <div className="col-span-12 md:col-span-9 space-y-4">
-          <ChartContainer title="Portfolio (demo)" series={series} />
+          {/* New: real equity curve */}
+          <ChartContainer title="Portfolio Equity Curve" series={equityCurve} />
 
+          {/* KPIs */}
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
             <KpiCard label="Sharpe" value={loading ? '—' : metrics?.sharpe ?? '—'} />
             <KpiCard label="Sortino" value={loading ? '—' : metrics?.sortino ?? '—'} />
@@ -138,7 +137,7 @@ export default function DashboardPage() {
             <KpiCard label="Max DD" value={loading ? '—' : metrics?.max_drawdown ?? '—'} />
           </div>
 
-          {/* Macro sparklines (FRED) */}
+          {/* Macro sparklines */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
             {['CPIAUCSL', 'UNRATE', 'FEDFUNDS'].map((id) => (
               <ChartContainer
