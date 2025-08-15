@@ -1,7 +1,7 @@
 // app/page.tsx
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import TopTickerRibbon from '@/components/TopTickerRibbon';
 import KpiCard from '@/components/KpiCard';
 import ControlPanel from '@/components/ControlPanel';
@@ -13,6 +13,7 @@ import DateRangePicker from '@/components/DateRangePicker';
 import RiskReturnChart, { RiskPoint } from '@/components/RiskReturnChart';
 import EquityChart from '@/components/EquityChart';
 import { load as loadPersist, save as savePersist } from '@/lib/persist';
+import { cachedJson } from '@/lib/cachedFetch';
 
 type Metrics = {
   sharpe: number;
@@ -50,7 +51,7 @@ function calcRange(preset: Exclude<Preset, 'CUSTOM'>) {
   return { start, end };
 }
 
-// Annualize mean/stdev and compute Sharpe (risk-free ~ 0)
+// Annualize mean/stdev and compute Sharpe (risk-free ~ 0 for simplicity)
 function annualize(returns: number[]) {
   const n = returns.length;
   if (!n) return { mu: 0, sigma: 0, sharpe: 0 };
@@ -74,7 +75,6 @@ export default function DashboardPage() {
   // Core state
   const [weights, setWeights] = useState<Record<string, number>>({});
   const [metrics, setMetrics] = useState<Metrics | null>(null);
-  // equity curve + dates (for the x-axis)
   const [equityCurve, setEquityCurve] = useState<number[]>([]);
   const [equityDates, setEquityDates] = useState<string[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -89,6 +89,10 @@ export default function DashboardPage() {
   useEffect(() => savePersist('preset', selectedPreset), [selectedPreset]);
   useEffect(() => savePersist('dateRange', dateRange), [dateRange.start, dateRange.end]);
 
+  // Debounce heavy props a bit so we don't spam the APIs while user clicks quickly
+  const debouncedTickers = useMemo(() => tickers, [tickers]);
+  const debouncedRange = useMemo(() => dateRange, [dateRange]);
+
   // Ribbon selection
   function handleRibbonSelect(sym: string) {
     setTickers((prev) => {
@@ -101,176 +105,134 @@ export default function DashboardPage() {
   async function runOptimize(userTickers: string[], method: string) {
     try {
       setError('');
-      const res = await fetch('/api/portfolio/optimize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tickers: userTickers, method }),
-      });
-      if (!res.ok) throw new Error(`Optimize failed: ${res.status}`);
-      const data = await res.json();
+      const data = await cachedJson<any>(
+        '/api/portfolio/optimize',
+        { method: 'POST', body: { tickers: userTickers, method }, ttl: 10 * 60_000 }
+      );
       setWeights(data.weights);
     } catch (e: any) {
       setError(e.message || 'Optimize error');
     }
   }
 
-  // Metrics + Equity curve (keeps "dates" for x-axis)
+  // Metrics + Equity curve (date-aware)
   useEffect(() => {
-    const ctrl = new AbortController();
-    let mounted = true;
-
+    let alive = true;
     (async () => {
       setLoading(true);
       setError('');
       try {
-        const r = await fetch('/api/metrics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tickers, start: dateRange.start, end: dateRange.end }),
-          signal: ctrl.signal,
-        });
+        const d = await cachedJson<any>(
+          '/api/metrics',
+          {
+            method: 'POST',
+            body: { tickers: debouncedTickers, start: debouncedRange.start, end: debouncedRange.end },
+            ttl: 15 * 60_000,
+          }
+        );
 
-        if (!r.ok) {
-          let msg = `Metrics failed: ${r.status}`;
-          try {
-            const j = await r.json();
-            if (j?.error && r.status === 400) {
-              msg = `${j.error}. Try a wider date range like 1Y or MAX.`;
-            }
-          } catch {}
-          if (mounted) setError(msg);
-          return;
-        }
-
-        const d = await r.json();
-        if (!mounted) return;
-
+        if (!alive) return;
         setMetrics(d.metrics ?? d);
-
         if (Array.isArray(d.equityCurve) && d.equityCurve.length > 0) {
           setEquityCurve(d.equityCurve as number[]);
           setEquityDates(Array.isArray(d.dates) ? d.dates : []);
         } else {
           setEquityCurve([]);
           setEquityDates([]);
+          // make the user-facing hint friendlier
+          if (!d.equityCurve?.length) {
+            setError('No valid price data for chosen tickers/date range. Try a wider date range like 1Y or MAX.');
+          }
         }
       } catch (e: any) {
-        if (e?.name !== 'AbortError' && mounted) setError(e.message || 'Metrics error');
+        if (!alive) return;
+        const msg = e?.message || 'Metrics error';
+        setError(msg);
       } finally {
-        if (mounted) setLoading(false);
+        if (alive) setLoading(false);
       }
     })();
-
     return () => {
-      mounted = false;
-      ctrl.abort();
+      alive = false;
     };
-  }, [tickers.join(','), dateRange.start, dateRange.end]);
+  }, [debouncedTickers.join(','), debouncedRange.start, debouncedRange.end]);
 
-  // Macro series with fallback if window is too narrow
+  // Macro series
   useEffect(() => {
-    const ctrl = new AbortController();
-    let mounted = true;
-
+    let alive = true;
     (async () => {
       try {
-        async function fetchRange(start?: string, end?: string) {
-          const res = await fetch('/api/macro/fred', {
+        const j = await cachedJson<any>(
+          '/api/macro/fred',
+          {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ series: ['CPIAUCSL', 'UNRATE', 'FEDFUNDS'], start, end }),
-            signal: ctrl.signal,
-          });
-          if (!res.ok) return null;
-          return res.json();
-        }
-
-        // 1) Try user-selected window
-        const j1 = await fetchRange(dateRange.start, dateRange.end);
-        const toNums = (arr: any[]) =>
-          Array.isArray(arr) ? arr.map((o) => Number(o?.value)).filter((n) => Number.isFinite(n)) : [];
-
-        let map: MacroMap = {};
-        if (j1 && Array.isArray(j1.data)) {
-          for (const s of j1.data) {
+            body: { series: ['CPIAUCSL', 'UNRATE', 'FEDFUNDS'], start: debouncedRange.start, end: debouncedRange.end },
+            ttl: 6 * 60 * 60_000,
+          }
+        );
+        if (!alive) return;
+        const map: MacroMap = {};
+        if (Array.isArray(j?.data)) {
+          for (const s of j.data) {
             const id = String(s?.id || '');
-            const arr = toNums(s?.observations || []);
+            const arr = Array.isArray(s?.observations) ? toNumbers(s.observations) : [];
             if (id) map[id] = arr;
           }
         }
-
-        // 2) If empty, widen to a long history (since 1990)
-        const allEmpty = ['CPIAUCSL', 'UNRATE', 'FEDFUNDS'].every((k) => !map[k]?.length);
-        if (allEmpty) {
-          const j2 = await fetchRange('1990-01-01', undefined);
-          map = {};
-          if (j2 && Array.isArray(j2.data)) {
-            for (const s of j2.data) {
-              const id = String(s?.id || '');
-              const arr = toNums(s?.observations || []);
-              if (id) map[id] = arr;
-            }
-          }
-        }
-
-        if (mounted) setMacro(map);
+        setMacro(map);
       } catch {
         /* ignore */
       }
     })();
-
     return () => {
-      mounted = false;
-      ctrl.abort();
+      alive = false;
     };
-  }, [dateRange.start, dateRange.end]);
+  }, [debouncedRange.start, debouncedRange.end]);
 
   // Fundamentals
   useEffect(() => {
     (async () => {
-      const f: Record<string, any> = {};
-      for (const s of tickers) {
+      const out: Record<string, any> = {};
+      const first3 = debouncedTickers.slice(0, 3);
+      for (const s of first3) {
         try {
-          const r = await fetch(`/api/fundamentals/${s}`);
-          if (r.ok) f[s] = await r.json();
-        } catch {}
+          const d = await cachedJson<any>(`/api/fundamentals/${s}`, { ttl: 12 * 60 * 60_000 });
+          out[s] = d;
+        } catch {
+          /* ignore */
+        }
       }
-      setFunda(f);
+      setFunda(out);
     })();
-  }, [tickers.join(',')]);
+  }, [debouncedTickers.join(',')]);
 
   // News
   useEffect(() => {
     (async () => {
       const m: Record<string, any[]> = {};
-      for (const s of tickers) {
+      const first3 = debouncedTickers.slice(0, 3);
+      for (const s of first3) {
         try {
-          const r = await fetch(`/api/news/${s}`);
-          if (r.ok) {
-            const j = await r.json();
-            m[s] = j?.items || [];
-          }
-        } catch {}
+          const j = await cachedJson<any>(`/api/news/${s}`, { ttl: 60 * 60_000 });
+          m[s] = j?.items || [];
+        } catch {
+          /* ignore */
+        }
       }
       setNews(m);
     })();
-  }, [tickers.join(',')]);
+  }, [debouncedTickers.join(',')]);
 
   // Risk–Return points from price history
   useEffect(() => {
-    const ctrl = new AbortController();
-    let mounted = true;
-
+    let alive = true;
     (async () => {
       try {
-        const r = await fetch('/api/prices/history', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tickers, start: dateRange.start, end: dateRange.end }),
-          signal: ctrl.signal,
-        });
-        if (!r.ok) return;
-        const j = await r.json();
+        const j = await cachedJson<any>(
+          '/api/prices/history',
+          { method: 'POST', body: { tickers: debouncedTickers, start: debouncedRange.start, end: debouncedRange.end }, ttl: 30 * 60_000 }
+        );
+        if (!alive) return;
         const series = Array.isArray(j?.series) ? j.series : [];
         const points: RiskPoint[] = [];
         for (const s of series as Array<{ symbol: string; bars: { close: number }[] }>) {
@@ -281,17 +243,15 @@ export default function DashboardPage() {
           const { mu, sigma, sharpe } = annualize(rets);
           points.push({ x: sigma, y: mu, label: s.symbol, sharpe });
         }
-        if (mounted) setRiskPoints(points);
+        setRiskPoints(points);
       } catch {
-        /* ignore */
+        if (alive) setRiskPoints([]);
       }
     })();
-
     return () => {
-      mounted = false;
-      ctrl.abort();
+      alive = false;
     };
-  }, [tickers.join(','), dateRange.start, dateRange.end]);
+  }, [debouncedTickers.join(','), debouncedRange.start, debouncedRange.end]);
 
   // Preset button handler
   function handlePresetClick(p: Exclude<Preset, 'CUSTOM'>) {
@@ -345,15 +305,13 @@ export default function DashboardPage() {
             <pre className="text-xs overflow-auto max-h-60">{JSON.stringify(weights, null, 2)}</pre>
           </div>
           {error ? (
-            <div className="mt-4 rounded-lg border border-red-500 p-3 text-sm text-red-400 bg-red-950/30">
-              {error}
-            </div>
+            <div className="mt-4 rounded-lg border border-red-500 p-3 text-sm text-red-400 bg-red-950/30">{error}</div>
           ) : null}
         </div>
 
         {/* Right column */}
         <div className="col-span-12 md:col-span-9 space-y-4">
-          {/* Equity curve (date-aware) */}
+          {/* Equity curve */}
           {loading ? <ChartSkeleton /> : <EquityChart title="Portfolio Equity Curve" values={equityCurve} dates={equityDates} />}
 
           {/* KPIs */}
