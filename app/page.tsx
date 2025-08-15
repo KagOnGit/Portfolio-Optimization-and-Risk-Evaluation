@@ -1,7 +1,7 @@
 // app/page.tsx
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import TopTickerRibbon from '@/components/TopTickerRibbon';
 import KpiCard from '@/components/KpiCard';
 import ControlPanel from '@/components/ControlPanel';
@@ -115,6 +115,7 @@ export default function DashboardPage() {
   useEffect(() => {
     const ctrl = new AbortController();
     let mounted = true;
+
     (async () => {
       setLoading(true);
       setError('');
@@ -125,17 +126,27 @@ export default function DashboardPage() {
           body: JSON.stringify({ tickers, start: dateRange.start, end: dateRange.end }),
           signal: ctrl.signal,
         });
+
         if (!r.ok) {
-          if (mounted) setError(`Metrics failed: ${r.status}`);
+          let msg = `Metrics failed: ${r.status}`;
+          try {
+            const j = await r.json();
+            if (j?.error && r.status === 400) {
+              msg = `${j.error}. Try a wider date range like 1Y or MAX.`;
+            }
+          } catch {}
+          if (mounted) setError(msg);
           return;
         }
+
         const d = await r.json();
         if (!mounted) return;
+
         setMetrics(d.metrics ?? d);
         if (Array.isArray(d.equityCurve) && d.equityCurve.length > 0) {
           setEquityCurve(d.equityCurve.map((val: number, idx: number) => ({ x: idx, y: val })));
         } else {
-          setEquityCurve([{ x: 0, y: 1 }, { x: 1, y: 1 }]);
+          setEquityCurve([{ x: 0, y: 1 }, { x: 1, y: 1 }]); // safe placeholder
         }
       } catch (e: any) {
         if (e?.name !== 'AbortError' && mounted) setError(e.message || 'Metrics error');
@@ -143,6 +154,7 @@ export default function DashboardPage() {
         if (mounted) setLoading(false);
       }
     })();
+
     return () => {
       mounted = false;
       ctrl.abort();
@@ -158,7 +170,11 @@ export default function DashboardPage() {
         const resp = await fetch('/api/macro/fred', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ series: ['CPIAUCSL', 'UNRATE', 'FEDFUNDS'], start: dateRange.start, end: dateRange.end }),
+          body: JSON.stringify({
+            series: ['CPIAUCSL', 'UNRATE', 'FEDFUNDS'],
+            start: dateRange.start,
+            end: dateRange.end,
+          }),
           signal: ctrl.signal,
         });
         if (!resp.ok) return;
@@ -212,7 +228,7 @@ export default function DashboardPage() {
     })();
   }, [tickers.join(',')]);
 
-  // Risk–Return points from price history
+  // Risk–Return points from price history (respect selected dateRange)
   useEffect(() => {
     const ctrl = new AbortController();
     let mounted = true;
@@ -221,21 +237,27 @@ export default function DashboardPage() {
         const r = await fetch('/api/prices/history', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tickers }),
+          body: JSON.stringify({ tickers, start: dateRange.start, end: dateRange.end }),
           signal: ctrl.signal,
         });
         if (!r.ok) return;
         const j = await r.json();
         const series = Array.isArray(j?.series) ? j.series : [];
+
         const points: RiskPoint[] = [];
-        for (const s of series as Array<{ symbol: string; bars: { close: number }[] }>) {
-          const closes = s.bars.map((b) => b.close).filter((n) => Number.isFinite(n));
+        for (const s of series as Array<{ symbol: string; bars: { date: string; close: number }[] }>) {
+          const barsInRange = (s.bars || []).filter(
+            (b) => b.date >= dateRange.start && b.date <= dateRange.end
+          );
+          const closes = barsInRange.map((b) => b.close).filter((n) => Number.isFinite(n));
           if (closes.length < 3) continue;
+
           const rets: number[] = [];
           for (let i = 1; i < closes.length; i++) rets.push(closes[i] / closes[i - 1] - 1);
           const { mu, sigma, sharpe } = annualize(rets);
           points.push({ x: sigma, y: mu, label: s.symbol, sharpe });
         }
+
         if (mounted) setRiskPoints(points);
       } catch {}
     })();
@@ -243,7 +265,7 @@ export default function DashboardPage() {
       mounted = false;
       ctrl.abort();
     };
-  }, [tickers.join(',')]);
+  }, [tickers.join(','), dateRange.start, dateRange.end]);
 
   // Preset button handler
   function handlePresetClick(p: Exclude<Preset, 'CUSTOM'>) {
@@ -284,7 +306,7 @@ export default function DashboardPage() {
       <div className="mx-auto max-w-screen-2xl p-6 grid grid-cols-12 gap-4">
         {/* Left column */}
         <div className="col-span-12 md:col-span-3">
-          {/* FIX: pass both (panelTickers, method) */}
+          {/* IMPORTANT: pass (panelTickers, method) to match ControlPanel’s onRun signature */}
           <ControlPanel
             onRun={(panelTickers: string[], method: string) => {
               setTickers(panelTickers);
@@ -309,11 +331,7 @@ export default function DashboardPage() {
         {/* Right column */}
         <div className="col-span-12 md:col-span-9 space-y-4">
           {/* Equity curve */}
-          {loading ? (
-            <ChartSkeleton />
-          ) : (
-            <ChartContainer title="Portfolio Equity Curve" series={equityCurve} />
-          )}
+          {loading ? <ChartSkeleton /> : <ChartContainer title="Portfolio Equity Curve" series={equityCurve} />}
 
           {/* KPIs */}
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">

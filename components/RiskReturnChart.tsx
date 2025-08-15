@@ -1,98 +1,81 @@
 // components/RiskReturnChart.tsx
 'use client';
 
-import {
-  ResponsiveContainer,
-  ScatterChart,
-  Scatter,
-  XAxis,
-  YAxis,
-  Tooltip,
-  CartesianGrid,
-  Legend,
-} from 'recharts';
+type Pt = { x: number; y: number; label: string; sharpe?: number };
 
-export type RiskPoint = { x: number; y: number; label: string; sharpe: number };
-
-// Bright, distinct colors per label
-function colorFor(label: string) {
-  const map: Record<string, string> = {
-    SPY: '#60a5fa',   // sky-400
-    QQQ: '#f472b6',   // pink-400
-    TLT: '#34d399',   // emerald-400
-    AAPL: '#fbbf24',  // amber-400
-    MSFT: '#a78bfa',  // violet-400
-    GLD: '#f59e0b',   // amber-500
-    'BTC-USD': '#f87171', // red-400
-  };
-  return map[label] || '#60a5fa';
+function fmtPct(x: number) {
+  return `${(x * 100).toFixed(2)}%`;
 }
 
-function Dot(props: any) {
-  const { cx, cy, payload } = props;
-  const label = payload?.label as string;
-  const fill = colorFor(label);
-  return <circle cx={cx} cy={cy} r={5} fill={fill} stroke="#ffffff" strokeWidth={1.5} />;
-}
+const palette = (label: string) => {
+  const L = label.toUpperCase();
+  if (L.includes('SPY')) return { fill: '#60A5FA', stroke: '#BFDBFE' };     // blue
+  if (L.includes('QQQ')) return { fill: '#34D399', stroke: '#A7F3D0' };     // green
+  if (L.includes('TLT')) return { fill: '#F59E0B', stroke: '#FCD34D' };     // amber
+  return { fill: '#E5E7EB', stroke: '#9CA3AF' };                            // gray
+};
 
-function CustomTooltip({ active, payload }: { active?: boolean; payload?: any[] }) {
-  if (!active || !payload || payload.length === 0) return null;
-  const p = payload[0]?.payload as RiskPoint | undefined;
-  if (!p) return null;
-  return (
-    <div className="rounded-md border bg-neutral-900 p-2 text-xs shadow">
-      <div className="font-medium mb-1">{p.label}</div>
-      <div>Return: {(p.y * 100).toFixed(2)}%</div>
-      <div>Volatility: {(p.x * 100).toFixed(2)}%</div>
-      <div>Sharpe: {p.sharpe.toFixed(2)}</div>
-    </div>
-  );
-}
-
-function LegendContent({ payload }: { payload?: any[] }) {
-  if (!payload) return null;
-  // Extract unique labels from points (payload contains one item, we’ll re-map from points later if needed)
-  const items = Array.from(
-    new Map(payload.map((p: any) => [p.payload?.label, colorFor(p.payload?.label)])).entries()
-  ); // [label,color]
-  return (
-    <ul className="flex flex-wrap gap-3 text-xs">
-      {items.map(([label, color]) => (
-        <li key={label} className="flex items-center gap-1">
-          <span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: color as string, boxShadow: '0 0 0 1.5px #fff inset' }} />
-          <span className="text-neutral-300">{label}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
+export type RiskPoint = Pt;
 
 export default function RiskReturnChart({ points }: { points: RiskPoint[] }) {
+  if (!points || points.length === 0) {
+    return (
+      <div className="rounded-lg border p-4 bg-neutral-900">
+        <div className="font-medium mb-2">Risk vs Return (annualized)</div>
+        <div className="h-48 grid place-items-center text-neutral-400 text-sm">
+          No data for this selection.
+        </div>
+      </div>
+    );
+  }
+
+  // Determine bounds with padding
+  const maxX = Math.max(...points.map((p) => p.x), 0.01);
+  const maxY = Math.max(...points.map((p) => p.y), 0.01);
+  const padX = maxX * 0.2;
+  const padY = maxY * 0.2;
+  const W = 640, H = 280, L = 48, B = 36, R = 12, T = 16;
+  const plotW = W - L - R;
+  const plotH = H - T - B;
+
+  const toX = (x: number) => L + (x / (maxX + padX)) * plotW;
+  const toY = (y: number) => T + (1 - y / (maxY + padY)) * plotH;
+
   return (
-    <div className="rounded-lg border p-4 bg-neutral-900 h-72">
+    <div className="rounded-lg border p-4 bg-neutral-900">
       <div className="font-medium mb-2">Risk vs Return (annualized)</div>
-      <ResponsiveContainer width="100%" height="100%">
-        <ScatterChart margin={{ top: 10, right: 20, left: 10, bottom: 10 }}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis
-            type="number"
-            dataKey="x"
-            name="Volatility"
-            tick={{ fill: '#d4d4d8' }}
-            tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`}
-          />
-          <YAxis
-            type="number"
-            dataKey="y"
-            name="Return"
-            tick={{ fill: '#d4d4d8' }}
-            tickFormatter={(v: number) => `${(v * 100).toFixed(0)}%`}
-          />
-          <Tooltip content={<CustomTooltip />} />
-          <Legend content={<LegendContent />} />
-          <Scatter data={points} shape={<Dot />} />
-        </ScatterChart>
-      </ResponsiveContainer>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} className="block">
+        {/* axes */}
+        <line x1={L} y1={T} x2={L} y2={H - B} stroke="#2A2A2A" />
+        <line x1={L} y1={H - B} x2={W - R} y2={H - B} stroke="#2A2A2A" />
+
+        {/* grid */}
+        {Array.from({ length: 5 }).map((_, i) => {
+          const y = T + (i / 4) * plotH;
+          return <line key={`gy${i}`} x1={L} y1={y} x2={W - R} y2={y} stroke="#1F2937" strokeDasharray="3 4" />;
+        })}
+
+        {/* labels */}
+        <text x={L} y={T - 4} fontSize="10" fill="#9CA3AF">Return</text>
+        <text x={W - R - 32} y={H - B + 12} fontSize="10" fill="#9CA3AF">Risk (σ)</text>
+
+        {/* points */}
+        {points.map((p, i) => {
+          const { fill, stroke } = palette(p.label);
+          const x = toX(p.x), y = toY(p.y);
+          return (
+            <g key={i}>
+              <circle cx={x} cy={y} r={6} fill={fill} stroke={stroke} strokeWidth={2} />
+              <text x={x + 9} y={y + 4} fontSize="11" fill="#E5E7EB">{p.label}</text>
+              {typeof p.sharpe === 'number' && (
+                <text x={x + 9} y={y + 16} fontSize="10" fill="#9CA3AF">
+                  {`S=${p.sharpe.toFixed(2)} • μ=${fmtPct(p.y)} • σ=${fmtPct(p.x)}`}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
     </div>
   );
 }
