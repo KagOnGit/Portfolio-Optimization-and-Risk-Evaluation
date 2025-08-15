@@ -2,8 +2,35 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Prefer dark color scheme (helps form controls, etc.) */
 html.dark { color-scheme: dark; }
 
-@keyframes scrollTicker { 0%{transform:translateX(0)} 100%{transform:translateX(-50%)} }
-.ticker-mask{mask-image:linear-gradient(to right,transparent 0,black 24px,black calc(100% - 24px),transparent 100%);-webkit-mask-image:linear-gradient(to right,transparent 0,black 24px,black calc(100% - 24px),transparent 100%)}
-.ticker-track{display:inline-flex;will-change:transform;animation:scrollTicker var(--dur,30s) linear infinite}
+/* Base tweaks */
+* { -webkit-tap-highlight-color: transparent; }
+::selection { background: rgba(59,130,246,0.35); }
+
+/* Optional: subtle custom scrollbar on desktop */
+@media (hover: hover) {
+  ::-webkit-scrollbar { height: 10px; width: 10px; }
+  ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 999px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+}
+
+/* --- Endless ticker animation helpers --- */
+@keyframes scrollTicker {
+  0%   { transform: translateX(0) }
+  100% { transform: translateX(-50%) }
+}
+
+/* Edge-fade mask so the strip fades in/out on sides */
+.ticker-mask {
+  mask-image: linear-gradient(to right, transparent 0, black 24px, black calc(100% - 24px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0, black 24px, black calc(100% - 24px), transparent 100%);
+}
+
+/* The moving track; --dur is set inline from the component */
+.ticker-track {
+  display: inline-flex;
+  will-change: transform;
+  animation: scrollTicker var(--dur, 30s) linear infinite;
+}

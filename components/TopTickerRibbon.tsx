@@ -12,11 +12,20 @@ function classByChange(x: number | null) {
   return x > 0 ? 'text-emerald-500' : x < 0 ? 'text-red-500' : 'text-neutral-400';
 }
 
+function formatPrice(symbol: string, price: number | null) {
+  if (price == null || !Number.isFinite(price)) return '—';
+  // Dollar prefix for ALL symbols; special-case BTC for fewer decimals.
+  if (symbol === 'BTC-USD') {
+    return `$${price.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  }
+  return `$${price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 export default function TopTickerRibbon({
   symbols = DEFAULT_TICKERS,
   refreshMs = 60_000,
   pxPerSec = 120,
-  onSelect, // <-- NEW optional prop
+  onSelect, // optional click-to-select handler
 }: {
   symbols?: string[];
   refreshMs?: number;
@@ -30,6 +39,7 @@ export default function TopTickerRibbon({
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [duration, setDuration] = useState(30);
 
+  // Fetch quotes from our API
   async function load() {
     try {
       setErr('');
@@ -57,6 +67,7 @@ export default function TopTickerRibbon({
     }
   }
 
+  // Initial + interval refresh
   useEffect(() => {
     load();
     const id = setInterval(load, refreshMs);
@@ -64,15 +75,18 @@ export default function TopTickerRibbon({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbols.join(','), refreshMs]);
 
-  // Two copies for seamless loop
+  // We render TWO copies for a seamless loop (endless)
   const setData = useMemo(() => rows, [rows]);
 
-  // Measure and set duration based on width
+  // Measure one set width and set animation duration so speed feels consistent
   useEffect(() => {
     const el = trackRef.current;
     if (!el) return;
-    const oneSetWidth = el.scrollWidth / 2; // because we render two sets
-    if (oneSetWidth > 0) setDuration(Math.max(12, oneSetWidth / pxPerSec));
+    // total scrollWidth includes both copies; divide by 2 to get one-set width
+    const oneSetWidth = el.scrollWidth / 2;
+    if (oneSetWidth > 0) {
+      setDuration(Math.max(12, oneSetWidth / pxPerSec));
+    }
   }, [rows, pxPerSec]);
 
   return (
@@ -85,17 +99,12 @@ export default function TopTickerRibbon({
             style={{ ['--dur' as any]: `${duration}s` }}
             aria-live="polite"
           >
+            {/* two copies to create an endless loop */}
             {[0, 1].map((rep) => (
               <div key={rep} className="flex gap-6 pr-12">
                 {setData.map((it, idx) => {
                   const pct =
                     it.changePct == null ? '—' : `${it.changePct >= 0 ? '+' : ''}${it.changePct.toFixed(2)}%`;
-                  const price =
-                    it.price == null
-                      ? '—'
-                      : it.symbol === 'BTC-USD'
-                      ? `$${it.price.toLocaleString()}`
-                      : it.price.toLocaleString();
                   return (
                     <button
                       key={`${rep}-${it.symbol}-${idx}`}
@@ -106,7 +115,7 @@ export default function TopTickerRibbon({
                     >
                       <span className="font-medium text-neutral-200">{it.symbol}</span>
                       <span className="text-neutral-500">•</span>
-                      <span className="tabular-nums text-neutral-100">{price}</span>
+                      <span className="tabular-nums text-neutral-100">{formatPrice(it.symbol, it.price)}</span>
                       <span className={`tabular-nums ${classByChange(it.changePct)}`}>{pct}</span>
                     </button>
                   );
