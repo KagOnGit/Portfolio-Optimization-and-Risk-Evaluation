@@ -1,3 +1,8 @@
+// app/api/metrics/route.ts
+export const runtime = 'nodejs';
+export const revalidate = 0;
+export const dynamic = 'force-dynamic';
+
 import { NextResponse } from 'next/server';
 import { sharpe, sortino, histVaR, histCVaR, maxDrawdown } from '@/lib/math';
 import { fetchHistory, closesToReturns } from '@/lib/prices';
@@ -5,28 +10,18 @@ import { fetchHistory, closesToReturns } from '@/lib/prices';
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { tickers = ['SPY','QQQ','TLT'] } = body || {};
+    const { tickers = ['SPY','QQQ','TLT'], start, end } = body || {};
     const upper = (tickers as string[]).map(s => s.toUpperCase()).slice(0, 12);
 
-    // Fetch history safely per ticker
-    const series = await Promise.all(
-      upper.map(async (s) => {
-        try {
-          const res = await fetchHistory([s]);
-          return res[0]; // fetchHistory returns array
-        } catch {
-          return { symbol: s, bars: [] };
-        }
-      })
-    );
-
-    const closeArrays = series.map(s => s.bars.map(b => b.close)).filter(arr => arr.length > 1);
-    if (!closeArrays.length) {
-      return NextResponse.json({ error: 'No valid price data for any ticker' }, { status: 400 });
+    const series = await fetchHistory(upper);
+    const closeArrays = series.map(s => s.bars.map(b => b.close));
+    const validArrays = closeArrays.filter(arr => arr.length > 1);
+    if (validArrays.length === 0) {
+      return NextResponse.json({ error: 'No valid price data for tickers' }, { status: 400 });
     }
 
-    const minLen = Math.min(...closeArrays.map(a => a.length));
-    const aligned = closeArrays.map(a => a.slice(a.length - minLen));
+    const minLen = Math.min(...validArrays.map(a => a.length));
+    const aligned = validArrays.map(a => a.slice(a.length - minLen));
 
     const returnsArrays = aligned.map(arr => closesToReturns(arr));
     const minR = Math.min(...returnsArrays.map(a => a.length));
@@ -38,16 +33,15 @@ export async function POST(req: Request) {
 
     const portReturns: number[] = [];
     for (let i = 0; i < minR; i++) {
-      const avg = retAligned.reduce((acc, ar) => acc + ar[i], 0) / retAligned.length;
-      portReturns.push(avg);
+      portReturns.push(retAligned.reduce((acc, ar) => acc + ar[i], 0) / retAligned.length);
     }
 
-    // Equity curve
+    // equity curve
     const equityCurve: number[] = [];
-    let cumulative = 1;
+    let c = 1;
     for (const r of portReturns) {
-      cumulative *= 1 + r;
-      equityCurve.push(cumulative);
+      c *= (1 + r);
+      equityCurve.push(c);
     }
 
     const metrics = {
@@ -55,7 +49,7 @@ export async function POST(req: Request) {
       sortino: +sortino(portReturns).toFixed(3),
       var: +histVaR(portReturns, 0.95).toFixed(4),
       cvar: +histCVaR(portReturns, 0.95).toFixed(4),
-      max_drawdown: +maxDrawdown(equityCurve).toFixed(4)
+      max_drawdown: +maxDrawdown(equityCurve).toFixed(4),
     };
 
     return NextResponse.json({ metrics, equityCurve });
@@ -65,5 +59,5 @@ export async function POST(req: Request) {
 }
 
 export async function GET() {
-  return NextResponse.json({ info: 'Use POST with { tickers } to compute real metrics.' });
+  return NextResponse.json({ info: 'Use POST with { tickers }.' });
 }

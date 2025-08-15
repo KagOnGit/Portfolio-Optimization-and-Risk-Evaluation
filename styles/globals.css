@@ -2,22 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ===== Endless Ticker Styles ===== */
-@keyframes scrollTicker {
-  0%   { transform: translateX(0); }
-  100% { transform: translateX(-50%); } /* move by exactly one set width */
-}
+html.dark { color-scheme: dark; }
 
-.ticker-mask {
-  mask-image: linear-gradient(to right, transparent 0, black 24px, black calc(100% - 24px), transparent 100%);
-  -webkit-mask-image: linear-gradient(to right, transparent 0, black 24px, black calc(100% - 24px), transparent 100%);
-}
-
-.ticker-track {
-  display: inline-flex;
-  will-change: transform;
-  animation: scrollTicker var(--dur, 30s) linear infinite;
-}
-
-/* Optional: pause on hover */
-/* .ticker-track:hover { animation-play-state: paused; } */
+@keyframes scrollTicker { 0%{transform:translateX(0)} 100%{transform:translateX(-50%)} }
+.ticker-mask{mask-image:linear-gradient(to right,transparent 0,black 24px,black calc(100% - 24px),transparent 100%);-webkit-mask-image:linear-gradient(to right,transparent 0,black 24px,black calc(100% - 24px),transparent 100%)}
+.ticker-track{display:inline-flex;will-change:transform;animation:scrollTicker var(--dur,30s) linear infinite}
