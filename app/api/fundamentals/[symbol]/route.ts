@@ -1,99 +1,85 @@
-// app/api/fundamentals/[symbol]/route.ts
 import { NextResponse } from 'next/server';
 
-type FmpProfile = {
-  symbol?: string;
-  price?: number;
-  mktCap?: number;
-  marketCap?: number;
-  pe?: number;
-  forwardPE?: number;
-  beta?: number;
-  lastDiv?: number;
-  '52WeekHigh'?: number;
-  '52WeekLow'?: number;
+type Funda = {
+  marketCap?: number | null;
+  pe?: number | null;
+  forwardPE?: number | null;
+  dividendYield?: number | null;
+  beta?: number | null;
+  '52wHigh'?: number | null;
+  '52wLow'?: number | null;
+  source: 'alphavantage' | 'yahoo';
 };
 
-type FmpQuote = {
-  price?: number;
-  marketCap?: number;
-  pe?: number;
-  forwardPE?: number;
-  beta?: number;
-  lastDiv?: number;
-  yearHigh?: number; // sometimes used
-  yearLow?: number;  // sometimes used
-};
-
-function pickNum(...candidates: Array<unknown>): number | null {
-  for (const v of candidates) {
-    const n = Number(v);
-    if (Number.isFinite(n) && n !== 0) return n;
-  }
-  return null;
+// helpers
+function toNum(x: any): number | null {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : null;
 }
 
 export async function GET(
   _req: Request,
   { params }: { params: { symbol: string } }
 ) {
-  const sym = String(params.symbol || '').toUpperCase();
-  const key = process.env.FMP_API_KEY || '';
+  const s = (params.symbol || '').toUpperCase();
+  if (!s) return NextResponse.json({});
 
-  let profile: FmpProfile | null = null;
-  let quote: FmpQuote | null = null;
+  const AV = process.env.ALPHAVANTAGE_API_KEY || '';
 
-  if (key) {
+  // 1) Alpha Vantage OVERVIEW (free key)
+  if (AV) {
     try {
-      // profile has mktCap / 52w values fairly consistently
-      const pr = await fetch(
-        `https://financialmodelingprep.com/api/v3/profile/${encodeURIComponent(
-          sym
-        )}?apikey=${key}`,
-        { cache: 'no-store' }
-      );
-      const pj = (await pr.json()) as any[];
-      profile = Array.isArray(pj) && pj.length ? (pj[0] as FmpProfile) : null;
-    } catch {}
-
-    try {
-      // quote fills gaps when profile misses something
-      const qr = await fetch(
-        `https://financialmodelingprep.com/api/v3/quote/${encodeURIComponent(
-          sym
-        )}?apikey=${key}`,
-        { cache: 'no-store' }
-      );
-      const qj = (await qr.json()) as any[];
-      quote = Array.isArray(qj) && qj.length ? (qj[0] as FmpQuote) : null;
-    } catch {}
+      const url = `https://www.alphavantage.co/query?function=OVERVIEW&symbol=${encodeURIComponent(s)}&apikey=${AV}`;
+      const r = await fetch(url, { cache: 'no-store' });
+      if (r.ok) {
+        const j = await r.json();
+        // AV returns empty {} when throttled/unknown
+        if (Object.keys(j || {}).length > 0) {
+          const out: Funda = {
+            marketCap: toNum(j.MarketCapitalization),
+            pe: toNum(j.PERatio),
+            forwardPE: toNum(j.ForwardPE),
+            dividendYield: toNum(j.DividendYield),
+            beta: toNum(j.Beta),
+            '52wHigh': toNum(j['52WeekHigh']),
+            '52wLow': toNum(j['52WeekLow']),
+            source: 'alphavantage',
+          };
+          return NextResponse.json(out);
+        }
+      }
+    } catch { /* fall through */ }
   }
 
-  // If we still have nothing, return explicit nulls so the UI shows “—”
-  const marketCap = pickNum(profile?.mktCap, profile?.marketCap, quote?.marketCap);
-  const pe = pickNum(profile?.pe, quote?.pe);
-  const forwardPE = pickNum(profile?.forwardPE, quote?.forwardPE);
-  const dividendYield = pickNum(profile?.lastDiv, quote?.lastDiv);
-  const beta = pickNum(profile?.beta, quote?.beta);
-  const week52High = pickNum(
-    (profile as any)?.['52WeekHigh'],
-    (profile as any)?.['52 week high'],
-    quote?.yearHigh
-  );
-  const week52Low = pickNum(
-    (profile as any)?.['52WeekLow'],
-    (profile as any)?.['52 week low'],
-    quote?.yearLow
-  );
+  // 2) Yahoo Finance quoteSummary fallback (no key; works server-side)
+  try {
+    const mods = ['summaryDetail', 'defaultKeyStatistics', 'financialData'];
+    const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(s)}?modules=${mods.join(',')}`;
+    const r = await fetch(url, { cache: 'no-store' });
+    if (r.ok) {
+      const j = await r.json();
+      const res = j?.quoteSummary?.result?.[0] || {};
 
-  return NextResponse.json({
-    symbol: sym,
-    marketCap,
-    pe,
-    forwardPE,
-    dividendYield,
-    beta,
-    week52High,
-    week52Low,
-  });
+      const sd = res.summaryDetail || {};
+      const ks = res.defaultKeyStatistics || {};
+      const fd = res.financialData || {};
+
+      // many values are objects like {raw: 123, fmt:'123'}
+      const raw = (v: any) => (v && typeof v === 'object' && 'raw' in v ? v.raw : v);
+
+      const out: Funda = {
+        marketCap: toNum(raw(ks.marketCap) ?? raw(sd.marketCap)),
+        pe: toNum(raw(sd.trailingPE)),
+        forwardPE: toNum(raw(sd.forwardPE)),
+        dividendYield: toNum(raw(sd.dividendYield)),
+        beta: toNum(raw(ks.beta)),
+        '52wHigh': toNum(raw(sd.fiftyTwoWeekHigh)),
+        '52wLow': toNum(raw(sd.fiftyTwoWeekLow)),
+        source: 'yahoo',
+      };
+      return NextResponse.json(out);
+    }
+  } catch { /* ignore */ }
+
+  return NextResponse.json({}, { status: 200 });
 }
