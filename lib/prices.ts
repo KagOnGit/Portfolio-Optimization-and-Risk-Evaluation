@@ -184,3 +184,6 @@ export async function fetchHistory(
   }
   return results;
 }
+
+// ---- alias to satisfy older imports (build error fix) -------
+export { fetchQuoteSnapshot as fetchQuoteSnapshotServer };
