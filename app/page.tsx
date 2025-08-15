@@ -130,7 +130,7 @@ export default function DashboardPage() {
       try {
         const d = await cachedJson<any>('/api/metrics', {
           method: 'POST',
-          body: { tickers: debouncedTickers, start: debouncedRange.start, end: debouncedRange.end },
+          body: { tickers: debouncedTickers, start: debouncedRange.start, end: debouncedRange.end, weights },
           ttl: 15 * 60_000,
         });
 
@@ -156,7 +156,7 @@ export default function DashboardPage() {
     return () => {
       alive = false;
     };
-  }, [debouncedTickers.join(','), debouncedRange.start, debouncedRange.end]);
+  }, [debouncedTickers.join(','), debouncedRange.start, debouncedRange.end, weights]);
 
   // Macro series
   useEffect(() => {
@@ -312,6 +312,92 @@ export default function DashboardPage() {
             <ChartSkeleton />
           ) : (
             <EquityChart title="Portfolio Equity Curve" values={equityCurve} dates={equityDates} />
+          )}
+
+          {/* Downloads: equity & weights */}
+          <div className="flex flex-wrap items-center gap-2 -mt-2">
+            <button
+              className="px-2 py-1 rounded border text-xs hover:bg-neutral-800"
+              onClick={() => {
+                const rows = [['date', 'equity'], ...equityDates.map((d, i) => [d, String(equityCurve[i] ?? '')])];
+                const csv = rows.map(r => r.join(',')).join('\n');
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'equity_curve.csv';
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+            >
+              Download Equity CSV
+            </button>
+            <button
+              className="px-2 py-1 rounded border text-xs hover:bg-neutral-800"
+              onClick={() => {
+                const rows = [['symbol', 'weight']];
+                const keys = Object.keys(weights);
+                for (const k of keys) rows.push([k, String(weights[k])]);
+                const csv = rows.map(r => r.join(',')).join('\n');
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'weights.csv';
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+            >
+              Download Weights CSV
+            </button>
+          </div>
+
+          {/* Simple Allocation Editor (uses current weights) */}
+          {Object.keys(weights).length > 0 && (
+            <div className="rounded-lg border p-3">
+              <div className="text-sm font-medium mb-2">Manual Allocation</div>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+                {Object.entries(weights).map(([sym, w]) => (
+                  <label key={sym} className="text-xs flex items-center gap-2">
+                    <span className="w-10">{sym}</span>
+                    <input
+                      type="number"
+                      step="0.001"
+                      min="0"
+                      className="w-24 bg-transparent border rounded px-2 py-1"
+                      value={editWeights[sym] ?? w}
+                      onChange={(e) => {
+                        const val = Number(e.target.value);
+                        setEditWeights((prev) => ({ ...prev, [sym]: isFinite(val) ? val : 0 }));
+                      }}
+                    />
+                  </label>
+                ))}
+              </div>
+              <div className="mt-2 flex gap-2">
+                <button
+                  className="px-3 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-sm"
+                  onClick={() => {
+                    // normalize
+                    const sum = Object.values(editWeights).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
+                    if (sum > 0) {
+                      const norm: Record<string, number> = {};
+                      for (const k of Object.keys(editWeights)) norm[k] = (editWeights[k] || 0) / sum;
+                      setWeights(norm);
+                      setError('');
+                    }
+                  }}
+                >
+                  Apply Weights
+                </button>
+                <button
+                  className="px-3 py-1 rounded border text-sm"
+                  onClick={() => setEditWeights({})}
+                >
+                  Reset
+                </button>
+              </div>
+            </div>
           )}
 
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
