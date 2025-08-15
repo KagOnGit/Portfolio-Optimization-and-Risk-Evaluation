@@ -1,125 +1,160 @@
 // lib/prices.ts
-import { fetchWithBackoff } from './backoff';
+// Robust price utilities with FMP primary + Stooq fallback.
 
-export type PriceBar = { date: string; open: number; high: number; low: number; close: number; volume: number };
-export type Series = { symbol: string; bars: PriceBar[] };
-export type Quote = { last: number | null; prevClose: number | null; changePct: number | null };
+export type Bar = { date: string; close: number };
+export type Series = { symbol: string; bars: Bar[] };
 
-const STQ_DAILY = 'https://stooq.com/q/d/l/';
-const STQ_QUOTE = 'https://stooq.com/q/l/';
-
-/** Map user symbol -> Stooq symbol */
-export function toStooqSymbol(input: string): string {
-  const s = input.trim().toUpperCase();
-  if (s === 'BTC-USD' || s === 'BTCUSD') return 'btcusd';
-  if (/\.[a-z]{2,3}$/i.test(s)) return s.toLowerCase();
-  return `${s.toLowerCase()}.us`;
-}
-
-/** Fetch full daily CSV for a symbol and parse to bars */
-export async function fetchStooqDailyCSV(symbol: string): Promise<PriceBar[]> {
-  const sto = toStooqSymbol(symbol);
-  const url = `${STQ_DAILY}?s=${encodeURIComponent(sto)}&i=d`;
-  const res = await fetchWithBackoff(url, { cache: 'no-store' }, 3, 700);
-  const text = await res.text();
-  const lines = text.trim().split(/\r?\n/);
-  const out: PriceBar[] = [];
+// --- helpers -------------------------------------------------
+function parseCSV(csv: string): Bar[] {
+  // Stooq CSV: DATE,OPEN,HIGH,LOW,CLOSE,VOLUME
+  const lines = csv.trim().split(/\r?\n/);
+  const out: Bar[] = [];
   for (let i = 1; i < lines.length; i++) {
-    const [date, open, high, low, close, volume] = lines[i].split(',').map(v => v.trim());
-    const c = parseFloat(close);
-    if (!Number.isFinite(c)) continue;
-    out.push({
-      date,
-      open: parseFloat(open),
-      high: parseFloat(high),
-      low: parseFloat(low),
-      close: c,
-      volume: parseFloat(volume)
-    });
+    const parts = lines[i].split(',');
+    if (parts.length < 5) continue;
+    const date = parts[0];
+    const close = Number(parts[4]);
+    if (date && Number.isFinite(close)) out.push({ date, close });
   }
   return out;
 }
 
-/** Batch history for several symbols */
-export async function fetchHistory(symbols: string[]): Promise<Series[]> {
-  const results = await Promise.all(symbols.map(async s => {
-    const bars = await fetchStooqDailyCSV(s);
-    return { symbol: s.toUpperCase(), bars };
-  }));
-  return results;
+function withinRange(dateISO: string, start?: string, end?: string) {
+  if (!start && !end) return true;
+  if (start && dateISO < start) return false;
+  if (end && dateISO > end) return false;
+  return true;
 }
 
-/** Close-to-close returns */
 export function closesToReturns(closes: number[]): number[] {
-  const r: number[] = [];
-  for (let i = 1; i < closes.length; i++) r.push(closes[i] / closes[i-1] - 1);
-  return r;
+  const out: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    const a = closes[i - 1];
+    const b = closes[i];
+    if (Number.isFinite(a) && Number.isFinite(b) && a !== 0) {
+      out.push(b / a - 1);
+    }
+  }
+  return out;
 }
 
-/** Helper: fetch last two daily closes (fallback path) */
-async function fetchStooqDailyLastTwo(stoSymbol: string): Promise<{ last: number|null; prev: number|null }> {
-  const url = `${STQ_DAILY}?s=${encodeURIComponent(stoSymbol)}&i=d`;
-  const res = await fetchWithBackoff(url, { cache: 'no-store' }, 3, 700);
-  const text = await res.text();
-  const lines = text.trim().split(/\r?\n/);
-  if (lines.length < 3) return { last: null, prev: null };
-  const lastRow = lines[lines.length - 1].split(',').map(x=>x.trim());
-  const prevRow = lines[lines.length - 2].split(',').map(x=>x.trim());
-  const last = parseFloat(lastRow[4]);
-  const prev = parseFloat(prevRow[4]);
-  return {
-    last: Number.isFinite(last) ? last : null,
-    prev: Number.isFinite(prev) ? prev : null
-  };
-}
+// --- snapshots for ribbon -----------------------------------
+export async function fetchQuoteSnapshot(symbols: string[]) {
+  const FMP = process.env.FMP_API_KEY || '';
+  const out: Record<string, { last: number | null; changePct: number | null }> = {};
+  const syms = symbols.map((s) => s.toUpperCase());
 
-/**
- * Robust server-side snapshot:
- * 1) Try lightweight quote CSV (may give only "close")
- * 2) Always compute prevClose via daily CSV
- * 3) Compute changePct when possible
- */
-export async function fetchQuoteSnapshotServer(symbols: string[]): Promise<Record<string, Quote>> {
-  const out: Record<string, Quote> = {};
-  await Promise.all(symbols.map(async (sym) => {
-    const key = sym.toUpperCase();
-    const sto = toStooqSymbol(sym);
-    try {
-      // Attempt lightweight quote first
-      const url = `${STQ_QUOTE}?s=${encodeURIComponent(sto)}&f=sd2t2ohlcv&h&e=csv`;
-      const res = await fetchWithBackoff(url, { cache: 'no-store' }, 3, 700);
-      const text = await res.text();
-      const lines = text.trim().split(/\r?\n/);
-      if (lines.length >= 2) {
-        const row = lines[1].split(',');
-        const close = parseFloat(row[6]);
-        let last: number|null = Number.isFinite(close) ? close : null;
-
-        const d = await fetchStooqDailyLastTwo(sto);
-        const prevClose = d.prev;
-
-        let changePct: number|null = null;
-        if (last == null) last = d.last;
-        if (last != null && prevClose != null && prevClose !== 0) {
-          changePct = ((last - prevClose) / prevClose) * 100;
-        }
-
-        out[key] = { last, prevClose, changePct };
-        return;
+  try {
+    if (FMP) {
+      const url = `https://financialmodelingprep.com/api/v3/quote-short/${encodeURIComponent(
+        syms.join(',')
+      )}?apikey=${FMP}`;
+      const res = await fetch(url, { cache: 'no-store' as RequestCache });
+      const j = (await res.json()) as Array<{ symbol?: string; price?: number }>;
+      for (const s of syms) {
+        const row = j.find((r) => (r?.symbol || '').toUpperCase() === s);
+        const price = Number(row?.price);
+        // FMP quote-short does not include pct; leave null (ribbon will display "—%" if null)
+        out[s] = { last: Number.isFinite(price) ? price : null, changePct: null };
       }
-      throw new Error('no rows');
-    } catch {
-      // full daily fallback
-      try {
-        const { last, prev } = await fetchStooqDailyLastTwo(sto);
-        const changePct = (last != null && prev != null && prev !== 0)
-          ? ((last - prev) / prev) * 100
-          : null;
-        out[key] = { last, prevClose: prev, changePct };
-      } catch {
-        out[key] = { last: null, prevClose: null, changePct: null };
+      return out;
+    }
+  } catch {
+    // fall through to stooq
+  }
+
+  // Fallback: approximate from last two closes of daily history
+  const hist = await fetchHistory(syms, undefined, undefined);
+  for (const s of syms) {
+    const bars = (hist.find((h) => h.symbol === s)?.bars || []).slice(-2);
+    let last: number | null = null;
+    let changePct: number | null = null;
+    if (bars.length) {
+      last = bars[bars.length - 1].close;
+      if (bars.length === 2) {
+        const prev = bars[0].close;
+        changePct = prev ? ((last - prev) / prev) * 100 : null;
       }
     }
-  }));
+    out[s] = { last, changePct };
+  }
   return out;
+}
+
+// Convenience alias for server callers (e.g. alerts route)
+export async function fetchQuoteSnapshotServer(symbols: string[]) {
+  return fetchQuoteSnapshot(symbols);
+}
+
+// --- history (primary: FMP; fallback: Stooq) -----------------
+export async function fetchHistory(
+  symbols: string[],
+  start?: string,
+  end?: string
+): Promise<Series[]> {
+  const FMP = process.env.FMP_API_KEY || '';
+  const syms = symbols.map((s) => s.toUpperCase());
+
+  // Try FMP first (if key)
+  if (FMP) {
+    try {
+      const results: Series[] = [];
+      for (const sym of syms) {
+        // historical-price-full supports from/to
+        const url = `https://financialmodelingprep.com/api/v3/historical-price-full/${encodeURIComponent(
+          String(sym)
+        )}?serietype=line${start ? `&from=${start}` : ''}${end ? `&to=${end}` : ''}&apikey=${FMP}`;
+
+        const res = await fetch(url, { cache: 'no-store' as RequestCache });
+        const j = (await res.json()) as {
+          historical?: Array<{ date?: string; close?: number }>;
+        };
+
+        const rawHist: Array<{ date?: string; close?: number }> = Array.isArray(j?.historical)
+          ? j!.historical!
+          : [];
+
+        const mapped: Bar[] = rawHist.map((h: { date?: string; close?: number }): Bar => ({
+          date: String(h?.date ?? ''),
+          close: Number(h?.close),
+        }));
+
+        const filtered: Bar[] = mapped.filter((b: Bar): b is Bar => Boolean(b.date) && Number.isFinite(b.close));
+
+        const bars: Bar[] = filtered.sort((a: Bar, b: Bar) =>
+          a.date < b.date ? -1 : a.date > b.date ? 1 : 0
+        );
+
+        results.push({ symbol: sym, bars });
+      }
+      // If any symbol returned at least a couple bars, ship it
+      if (results.some((r) => r.bars.length > 2)) return results;
+    } catch {
+      // fall through to Stooq
+    }
+  }
+
+  // Fallback: Stooq CSV (no API key). Symbols must be lowercased; many ETFs/stocks exist.
+  const results: Series[] = [];
+  for (const symU of syms) {
+    const sym = symU.toLowerCase(); // stooq expects lower
+    try {
+      const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(String(sym))}&i=d`;
+      const res = await fetch(url, { cache: 'no-store' as RequestCache });
+      const csv = await res.text();
+
+      let bars: Bar[] = parseCSV(csv);
+
+      if (start || end) {
+        bars = bars.filter((b: Bar) => withinRange(b.date, start, end));
+      }
+
+      bars.sort((a: Bar, b: Bar) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+      results.push({ symbol: symU, bars });
+    } catch {
+      results.push({ symbol: symU, bars: [] });
+    }
+  }
+  return results;
 }
