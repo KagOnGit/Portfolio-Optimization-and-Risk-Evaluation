@@ -1,70 +1,38 @@
 // lib/cachedFetch.ts
-// A tiny fetch wrapper with optional in-memory TTL caching.
-// Works in both client and server environments.
-
 import { getCache, setCache } from './cache';
 
-type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+/**
+ * Cached JSON fetch — avoids re-fetching for a TTL period.
+ *
+ * @param url The API endpoint or URL to fetch.
+ * @param opts Fetch options plus optional { ttl } in milliseconds.
+ */
+export async function cachedJson<T = unknown>(
+  url: string,
+  opts?: RequestInit & { ttl?: number }
+): Promise<T> {
+  const ttl = opts?.ttl ?? 60_000; // default 1 min
+  const key = `cf:${url}:${opts?.method || 'GET'}:${opts?.body ? JSON.stringify(opts.body) : ''}`;
 
-export type CachedJsonOptions = {
-  method?: HttpMethod;
-  headers?: Record<string, string>;
-  body?: any;   // If object, we'll JSON.stringify it
-  ttl?: number; // ms. 0/undefined => no cache
-};
+  const hit = getCache<T>(key);
+  if (hit !== null) return hit;
 
-function cacheKey(url: string, method: HttpMethod, body: unknown): string {
-  const b =
-    body === undefined || body === null
-      ? ''
-      : typeof body === 'string'
-      ? body
-      : JSON.stringify(body);
-  return `${method}:${url}:${b}`;
-}
+  const res = await fetch(url, {
+    ...opts,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(opts?.headers || {}),
+    },
+    body: opts?.body && typeof opts.body !== 'string'
+      ? JSON.stringify(opts.body)
+      : (opts?.body as any),
+  });
 
-export async function cachedJson<T = any>(url: string, opts: CachedJsonOptions = {}): Promise<T> {
-  const method: HttpMethod = (opts.method || 'GET').toUpperCase() as HttpMethod;
-  const ttl = Number.isFinite(opts.ttl) ? Number(opts.ttl) : 0;
-  const key = ttl > 0 ? cacheKey(url, method, opts.body) : '';
-
-  if (ttl > 0) {
-    const hit = getCache<T>(key);
-    if (hit !== null) return hit;
-  }
-
-  const headers: Record<string, string> = { ...(opts.headers || {}) };
-  const init: RequestInit = { method, headers, cache: 'no-store' };
-
-  if (opts.body !== undefined && opts.body !== null) {
-    const b = opts.body;
-    if (
-      typeof b === 'string' ||
-      b instanceof FormData ||
-      b instanceof Blob ||
-      b instanceof ArrayBuffer
-    ) {
-      (init as any).body = b as any;
-    } else {
-      if (!headers['Content-Type']) headers['Content-Type'] = 'application/json';
-      (init as any).body = JSON.stringify(b);
-    }
-  }
-
-  const res = await fetch(url, init);
   if (!res.ok) {
-    let detail = '';
-    try { detail = await res.text(); } catch {}
-    throw new Error(`HTTP ${res.status} ${res.statusText}${detail ? ` — ${detail}` : ''}`);
+    throw new Error(`cachedFetch error: ${res.status} ${res.statusText}`);
   }
 
-  const json = (await res.json()) as T;
-  if (ttl > 0) setCache(key, json, ttl);
-  return json;
+  const data = (await res.json()) as T;
+  setCache(key, data, ttl);
+  return data;
 }
-
-export const cachedGet = <T = any>(url: string, ttl?: number, headers?: Record<string, string>) =>
-  cachedJson<T>(url, { method: 'GET', ttl, headers });
-
-export const cachedPost = <T = any>(url: string, body?: any, ttl?: number, headers?: Record<string, string>) =>
-  cachedJson<T>(url, { method: 'POST', body, ttl, headers });
