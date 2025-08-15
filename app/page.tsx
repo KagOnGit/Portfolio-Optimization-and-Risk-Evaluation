@@ -1,13 +1,17 @@
 // app/page.tsx
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import TopTickerRibbon from '@/components/TopTickerRibbon';
 import KpiCard from '@/components/KpiCard';
 import ControlPanel from '@/components/ControlPanel';
 import ChartContainer from '@/components/ChartContainer';
 import FundamentalsCard from '@/components/FundamentalsCard';
 import NewsList from '@/components/NewsList';
+import { CardSkeleton, ChartSkeleton } from '@/components/LoadingSkeleton';
+import DateRangePicker from '@/components/DateRangePicker';
+import RiskReturnChart, { RiskPoint } from '@/components/RiskReturnChart';
+import { load as loadPersist, save as savePersist } from '@/lib/persist';
 
 type Metrics = {
   sharpe: number;
@@ -30,9 +34,8 @@ function toNumbers(values: Array<{ value: string } | { date: string; value: stri
   return out;
 }
 
-// date-range presets
-type Preset = '1Y' | '3Y' | '5Y' | 'MAX';
-function calcRange(preset: Preset) {
+type Preset = '1Y' | '3Y' | '5Y' | 'MAX' | 'CUSTOM';
+function calcRange(preset: Exclude<Preset, 'CUSTOM'>) {
   const today = new Date();
   const end = today.toISOString().slice(0, 10);
   let start: string;
@@ -46,37 +49,59 @@ function calcRange(preset: Preset) {
   return { start, end };
 }
 
+// Annualize mean/stdev and compute Sharpe (risk-free ~ 0 for simplicity)
+function annualize(returns: number[]) {
+  const n = returns.length;
+  if (!n) return { mu: 0, sigma: 0, sharpe: 0 };
+  const mean = returns.reduce((a, b) => a + b, 0) / n;
+  const variance = returns.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
+  const sigmaD = Math.sqrt(variance);
+  const muA = mean * 252;
+  const sigA = sigmaD * Math.sqrt(252);
+  const sharpe = sigA ? muA / sigA : 0;
+  return { mu: muA, sigma: sigA, sharpe };
+}
+
 export default function DashboardPage() {
+  // Persisted selections
+  const [tickers, setTickers] = useState<string[]>(() => loadPersist('tickers', ['SPY', 'QQQ', 'TLT']));
+  const [selectedPreset, setSelectedPreset] = useState<Preset>(() => loadPersist('preset', '1Y' as Preset));
+  const [dateRange, setDateRange] = useState<{ start: string; end: string }>(() =>
+    loadPersist('dateRange', calcRange('1Y'))
+  );
+
+  // Core state
   const [weights, setWeights] = useState<Record<string, number>>({});
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [equityCurve, setEquityCurve] = useState<{ x: number; y: number }[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>('');
   const [macro, setMacro] = useState<MacroMap>({});
-
-  // NEW: fundamentals/news state
   const [funda, setFunda] = useState<Record<string, any>>({});
   const [news, setNews] = useState<Record<string, any[]>>({});
+  const [riskPoints, setRiskPoints] = useState<RiskPoint[]>([]);
 
-  // presets + date range
-  const [selectedPreset, setSelectedPreset] = useState<Preset>('1Y');
-  const [dateRange, setDateRange] = useState<{ start: string; end: string }>(() => calcRange('1Y'));
-  function handlePresetClick(p: Preset) {
-    setSelectedPreset(p);
-    setDateRange(calcRange(p));
+  // Persist whenever these change
+  useEffect(() => savePersist('tickers', tickers), [tickers]);
+  useEffect(() => savePersist('preset', selectedPreset), [selectedPreset]);
+  useEffect(() => savePersist('dateRange', dateRange), [dateRange.start, dateRange.end]);
+
+  // Ribbon selection
+  function handleRibbonSelect(sym: string) {
+    setTickers((prev) => {
+      const has = prev.includes(sym);
+      const next = has ? prev.filter((s) => s !== sym) : [sym, ...prev].slice(0, 6);
+      return Array.from(new Set(next));
+    });
   }
 
-  // tickers (can wire to ControlPanel later)
-  const defaultTickers = useMemo(() => ['SPY', 'QQQ', 'TLT'], []);
-  const visibleTickers = defaultTickers; // simple for now
-
-  async function runOptimize(tickers: string[], method: string) {
+  async function runOptimize(userTickers: string[], method: string) {
     try {
       setError('');
       const res = await fetch('/api/portfolio/optimize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tickers, method }),
+        body: JSON.stringify({ tickers: userTickers, method }),
       });
       if (!res.ok) throw new Error(`Optimize failed: ${res.status}`);
       const data = await res.json();
@@ -86,11 +111,10 @@ export default function DashboardPage() {
     }
   }
 
-  // Load metrics + equity curve (with cancel)
+  // Metrics + Equity curve
   useEffect(() => {
     const ctrl = new AbortController();
     let mounted = true;
-
     (async () => {
       setLoading(true);
       setError('');
@@ -98,11 +122,7 @@ export default function DashboardPage() {
         const r = await fetch('/api/metrics', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tickers: visibleTickers,
-            start: dateRange.start,
-            end: dateRange.end,
-          }),
+          body: JSON.stringify({ tickers, start: dateRange.start, end: dateRange.end }),
           signal: ctrl.signal,
         });
         if (!r.ok) {
@@ -123,28 +143,22 @@ export default function DashboardPage() {
         if (mounted) setLoading(false);
       }
     })();
-
     return () => {
       mounted = false;
       ctrl.abort();
     };
-  }, [visibleTickers.join(','), dateRange.start, dateRange.end]);
+  }, [tickers.join(','), dateRange.start, dateRange.end]);
 
-  // Load macro (bound to range) with cancel
+  // Macro series
   useEffect(() => {
     const ctrl = new AbortController();
     let mounted = true;
-
     (async () => {
       try {
         const resp = await fetch('/api/macro/fred', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            series: ['CPIAUCSL', 'UNRATE', 'FEDFUNDS'],
-            start: dateRange.start,
-            end: dateRange.end,
-          }),
+          body: JSON.stringify({ series: ['CPIAUCSL', 'UNRATE', 'FEDFUNDS'], start: dateRange.start, end: dateRange.end }),
           signal: ctrl.signal,
         });
         if (!resp.ok) return;
@@ -157,26 +171,21 @@ export default function DashboardPage() {
             const arr = Array.isArray(s?.observations) ? toNumbers(s.observations) : [];
             if (id) map[id] = arr;
           }
-          setMacro(map);
         }
-      } catch (e: any) {
-        if (e?.name === 'AbortError') return;
-        // silent log
-        console.warn('Macro load error', e);
-      }
+        setMacro(map);
+      } catch {}
     })();
-
     return () => {
       mounted = false;
       ctrl.abort();
     };
   }, [dateRange.start, dateRange.end]);
 
-  // Fundamentals for first 3 tickers
+  // Fundamentals
   useEffect(() => {
     (async () => {
       const f: Record<string, any> = {};
-      for (const s of visibleTickers) {
+      for (const s of tickers) {
         try {
           const r = await fetch(`/api/fundamentals/${s}`);
           if (r.ok) f[s] = await r.json();
@@ -184,13 +193,13 @@ export default function DashboardPage() {
       }
       setFunda(f);
     })();
-  }, [visibleTickers.join(',')]);
+  }, [tickers.join(',')]);
 
-  // News for first 3 tickers
+  // News
   useEffect(() => {
     (async () => {
       const m: Record<string, any[]> = {};
-      for (const s of visibleTickers) {
+      for (const s of tickers) {
         try {
           const r = await fetch(`/api/news/${s}`);
           if (r.ok) {
@@ -201,16 +210,53 @@ export default function DashboardPage() {
       }
       setNews(m);
     })();
-  }, [visibleTickers.join(',')]);
+  }, [tickers.join(',')]);
 
-  const sparkline = (arr: number[]) => arr.slice(-30);
+  // Risk–Return points from price history
+  useEffect(() => {
+    const ctrl = new AbortController();
+    let mounted = true;
+    (async () => {
+      try {
+        const r = await fetch('/api/prices/history', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tickers }),
+          signal: ctrl.signal,
+        });
+        if (!r.ok) return;
+        const j = await r.json();
+        const series = Array.isArray(j?.series) ? j.series : [];
+        const points: RiskPoint[] = [];
+        for (const s of series as Array<{ symbol: string; bars: { close: number }[] }>) {
+          const closes = s.bars.map((b) => b.close).filter((n) => Number.isFinite(n));
+          if (closes.length < 3) continue;
+          const rets: number[] = [];
+          for (let i = 1; i < closes.length; i++) rets.push(closes[i] / closes[i - 1] - 1);
+          const { mu, sigma, sharpe } = annualize(rets);
+          points.push({ x: sigma, y: mu, label: s.symbol, sharpe });
+        }
+        if (mounted) setRiskPoints(points);
+      } catch {}
+    })();
+    return () => {
+      mounted = false;
+      ctrl.abort();
+    };
+  }, [tickers.join(',')]);
+
+  // Preset button handler
+  function handlePresetClick(p: Exclude<Preset, 'CUSTOM'>) {
+    setSelectedPreset(p);
+    setDateRange(calcRange(p));
+  }
 
   return (
     <div className="min-h-screen">
-      <TopTickerRibbon />
+      <TopTickerRibbon onSelect={handleRibbonSelect} />
 
-      {/* Preset buttons */}
-      <div className="mx-auto max-w-screen-2xl px-6 pt-4 flex gap-3">
+      {/* Presets + Custom Date */}
+      <div className="mx-auto max-w-screen-2xl px-6 pt-4 flex flex-wrap items-center gap-3">
         {(['1Y', '3Y', '5Y', 'MAX'] as const).map((v) => (
           <button
             key={v}
@@ -224,11 +270,31 @@ export default function DashboardPage() {
             {v}
           </button>
         ))}
+        <div className="ml-auto">
+          <DateRangePicker
+            value={dateRange}
+            onChange={(rng) => {
+              setSelectedPreset('CUSTOM');
+              setDateRange(rng);
+            }}
+          />
+        </div>
       </div>
 
       <div className="mx-auto max-w-screen-2xl p-6 grid grid-cols-12 gap-4">
+        {/* Left column */}
         <div className="col-span-12 md:col-span-3">
-          <ControlPanel onRun={runOptimize} />
+          {/* FIX: pass both (panelTickers, method) */}
+          <ControlPanel
+            onRun={(panelTickers: string[], method: string) => {
+              setTickers(panelTickers);
+              runOptimize(panelTickers, method);
+            }}
+          />
+          <div className="mt-4 rounded-lg border p-4">
+            <div className="text-sm font-medium mb-2">Selected Tickers</div>
+            <div className="text-xs">{tickers.join(', ')}</div>
+          </div>
           <div className="mt-4 rounded-lg border p-4">
             <div className="text-sm font-medium mb-2">Weights</div>
             <pre className="text-xs overflow-auto max-h-60">{JSON.stringify(weights, null, 2)}</pre>
@@ -240,9 +306,14 @@ export default function DashboardPage() {
           ) : null}
         </div>
 
+        {/* Right column */}
         <div className="col-span-12 md:col-span-9 space-y-4">
           {/* Equity curve */}
-          <ChartContainer title="Portfolio Equity Curve" series={loading ? [{ x: 0, y: 1 }, { x: 1, y: 1 }] : equityCurve} />
+          {loading ? (
+            <ChartSkeleton />
+          ) : (
+            <ChartContainer title="Portfolio Equity Curve" series={equityCurve} />
+          )}
 
           {/* KPIs */}
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
@@ -271,18 +342,21 @@ export default function DashboardPage() {
                 title={id}
                 series={
                   macro[id]
-                    ? (sparkline(macro[id]).map((y, i) => ({ x: i, y })) as { x: number; y: number }[])
+                    ? (macro[id].slice(-30).map((y, i) => ({ x: i, y })) as { x: number; y: number }[])
                     : []
                 }
               />
             ))}
           </div>
 
+          {/* Risk vs Return */}
+          <RiskReturnChart points={riskPoints} />
+
           {/* Fundamentals + News per ticker */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {visibleTickers.map((s) => (
+            {tickers.map((s) => (
               <div key={`f-${s}`} className="space-y-4">
-                <FundamentalsCard symbol={s} data={funda[s] || {}} />
+                {funda[s] ? <FundamentalsCard symbol={s} data={funda[s]} /> : <CardSkeleton />}
                 <NewsList items={news[s] || []} title={`${s} News`} />
               </div>
             ))}
