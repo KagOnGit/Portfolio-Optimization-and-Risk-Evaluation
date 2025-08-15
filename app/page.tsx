@@ -89,7 +89,7 @@ export default function DashboardPage() {
   useEffect(() => savePersist('preset', selectedPreset), [selectedPreset]);
   useEffect(() => savePersist('dateRange', dateRange), [dateRange.start, dateRange.end]);
 
-  // Debounce heavy props a bit so we don't spam the APIs while user clicks quickly
+  // Debounce “logical” changes (kept simple; memo == we only depend on value changes)
   const debouncedTickers = useMemo(() => tickers, [tickers]);
   const debouncedRange = useMemo(() => dateRange, [dateRange]);
 
@@ -105,10 +105,11 @@ export default function DashboardPage() {
   async function runOptimize(userTickers: string[], method: string) {
     try {
       setError('');
-      const data = await cachedJson<any>(
-        '/api/portfolio/optimize',
-        { method: 'POST', body: { tickers: userTickers, method }, ttl: 10 * 60_000 }
-      );
+      const data = await cachedJson<any>('/api/portfolio/optimize', {
+        method: 'POST',
+        body: { tickers: userTickers, method },
+        ttl: 10 * 60_000,
+      });
       setWeights(data.weights);
     } catch (e: any) {
       setError(e.message || 'Optimize error');
@@ -122,14 +123,11 @@ export default function DashboardPage() {
       setLoading(true);
       setError('');
       try {
-        const d = await cachedJson<any>(
-          '/api/metrics',
-          {
-            method: 'POST',
-            body: { tickers: debouncedTickers, start: debouncedRange.start, end: debouncedRange.end },
-            ttl: 15 * 60_000,
-          }
-        );
+        const d = await cachedJson<any>('/api/metrics', {
+          method: 'POST',
+          body: { tickers: debouncedTickers, start: debouncedRange.start, end: debouncedRange.end },
+          ttl: 15 * 60_000,
+        });
 
         if (!alive) return;
         setMetrics(d.metrics ?? d);
@@ -139,15 +137,13 @@ export default function DashboardPage() {
         } else {
           setEquityCurve([]);
           setEquityDates([]);
-          // make the user-facing hint friendlier
           if (!d.equityCurve?.length) {
             setError('No valid price data for chosen tickers/date range. Try a wider date range like 1Y or MAX.');
           }
         }
       } catch (e: any) {
         if (!alive) return;
-        const msg = e?.message || 'Metrics error';
-        setError(msg);
+        setError(e?.message || 'Metrics error');
       } finally {
         if (alive) setLoading(false);
       }
@@ -162,14 +158,11 @@ export default function DashboardPage() {
     let alive = true;
     (async () => {
       try {
-        const j = await cachedJson<any>(
-          '/api/macro/fred',
-          {
-            method: 'POST',
-            body: { series: ['CPIAUCSL', 'UNRATE', 'FEDFUNDS'], start: debouncedRange.start, end: debouncedRange.end },
-            ttl: 6 * 60 * 60_000,
-          }
-        );
+        const j = await cachedJson<any>('/api/macro/fred', {
+          method: 'POST',
+          body: { series: ['CPIAUCSL', 'UNRATE', 'FEDFUNDS'], start: debouncedRange.start, end: debouncedRange.end },
+          ttl: 6 * 60 * 60_000,
+        });
         if (!alive) return;
         const map: MacroMap = {};
         if (Array.isArray(j?.data)) {
@@ -189,7 +182,7 @@ export default function DashboardPage() {
     };
   }, [debouncedRange.start, debouncedRange.end]);
 
-  // Fundamentals
+  // Fundamentals (first three to stay light)
   useEffect(() => {
     (async () => {
       const out: Record<string, any> = {};
@@ -198,15 +191,13 @@ export default function DashboardPage() {
         try {
           const d = await cachedJson<any>(`/api/fundamentals/${s}`, { ttl: 12 * 60 * 60_000 });
           out[s] = d;
-        } catch {
-          /* ignore */
-        }
+        } catch {}
       }
       setFunda(out);
     })();
   }, [debouncedTickers.join(',')]);
 
-  // News
+  // News (first three)
   useEffect(() => {
     (async () => {
       const m: Record<string, any[]> = {};
@@ -215,9 +206,7 @@ export default function DashboardPage() {
         try {
           const j = await cachedJson<any>(`/api/news/${s}`, { ttl: 60 * 60_000 });
           m[s] = j?.items || [];
-        } catch {
-          /* ignore */
-        }
+        } catch {}
       }
       setNews(m);
     })();
@@ -228,10 +217,11 @@ export default function DashboardPage() {
     let alive = true;
     (async () => {
       try {
-        const j = await cachedJson<any>(
-          '/api/prices/history',
-          { method: 'POST', body: { tickers: debouncedTickers, start: debouncedRange.start, end: debouncedRange.end }, ttl: 30 * 60_000 }
-        );
+        const j = await cachedJson<any>('/api/prices/history', {
+          method: 'POST',
+          body: { tickers: debouncedTickers, start: debouncedRange.start, end: debouncedRange.end },
+          ttl: 30 * 60_000,
+        });
         if (!alive) return;
         const series = Array.isArray(j?.series) ? j.series : [];
         const points: RiskPoint[] = [];
@@ -305,16 +295,20 @@ export default function DashboardPage() {
             <pre className="text-xs overflow-auto max-h-60">{JSON.stringify(weights, null, 2)}</pre>
           </div>
           {error ? (
-            <div className="mt-4 rounded-lg border border-red-500 p-3 text-sm text-red-400 bg-red-950/30">{error}</div>
+            <div className="mt-4 rounded-lg border border-red-500 p-3 text-sm text-red-400 bg-red-950/30">
+              {error}
+            </div>
           ) : null}
         </div>
 
         {/* Right column */}
         <div className="col-span-12 md:col-span-9 space-y-4">
-          {/* Equity curve */}
-          {loading ? <ChartSkeleton /> : <EquityChart title="Portfolio Equity Curve" values={equityCurve} dates={equityDates} />}
+          {loading ? (
+            <ChartSkeleton />
+          ) : (
+            <EquityChart title="Portfolio Equity Curve" values={equityCurve} dates={equityDates} />
+          )}
 
-          {/* KPIs */}
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
             <KpiCard label="Sharpe" value={loading ? '—' : metrics?.sharpe ?? '—'} />
             <KpiCard label="Sortino" value={loading ? '—' : metrics?.sortino ?? '—'} />
@@ -323,7 +317,6 @@ export default function DashboardPage() {
             <KpiCard label="Max DD" value={loading ? '—' : metrics?.max_drawdown ?? '—'} />
           </div>
 
-          {/* Diagnostics placeholder */}
           <div className="rounded-lg border p-4">
             <div className="font-medium mb-1">Diagnostics</div>
             <div className="text-sm text-neutral-400">
@@ -333,21 +326,22 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Macro sparklines */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {['CPIAUCSL', 'UNRATE', 'FEDFUNDS'].map((id) => (
               <ChartContainer
                 key={id}
                 title={id}
-                series={macro[id] ? (macro[id].slice(-30).map((y, i) => ({ x: i, y })) as { x: number; y: number }[]) : []}
+                series={
+                  macro[id]
+                    ? (macro[id].slice(-30).map((y, i) => ({ x: i, y })) as { x: number; y: number }[])
+                    : []
+                }
               />
             ))}
           </div>
 
-          {/* Risk vs Return */}
           <RiskReturnChart points={riskPoints} />
 
-          {/* Fundamentals + News per ticker */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {tickers.map((s) => (
               <div key={`f-${s}`} className="space-y-4">
