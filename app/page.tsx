@@ -1,6 +1,8 @@
 // app/page.tsx
 'use client';
 
+import AllocationEditor from '@/components/AllocationEditor';
+import DownloadButtons from '@/components/DownloadButtons';
 import { useEffect, useMemo, useState } from 'react';
 import TopTickerRibbon from '@/components/TopTickerRibbon';
 import KpiCard from '@/components/KpiCard';
@@ -73,6 +75,10 @@ export default function DashboardPage() {
   );
 
   // Core state
+  const [btDates, setBtDates] = useState<string[]>([]);
+  const [btEquity, setBtEquity] = useState<number[]>([]);
+  const [btWeights, setBtWeights] = useState<Record<string, number>>({});
+  const [editWeights, setEditWeights] = useState<Record<string, number>>({});
   const [weights, setWeights] = useState<Record<string, number>>({});
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [equityCurve, setEquityCurve] = useState<number[]>([]);
@@ -92,6 +98,16 @@ export default function DashboardPage() {
   // Debounce “logical” changes (kept simple; memo == we only depend on value changes)
   const debouncedTickers = useMemo(() => tickers, [tickers]);
   const debouncedRange = useMemo(() => dateRange, [dateRange]);
+
+  // Init editor weights on ticker changes (equal-weight by default; preserve existing values if present)
+  useEffect(() => {
+    if (!tickers.length) return;
+    const ew = 1 / tickers.length;
+    const init: Record<string, number> = {};
+    for (const s of tickers) init[s] = editWeights[s] ?? ew;
+    setEditWeights(init);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tickers.join(',')]);
 
   // Ribbon selection
   function handleRibbonSelect(sym: string) {
@@ -303,12 +319,14 @@ export default function DashboardPage() {
 
         {/* Right column */}
         <div className="col-span-12 md:col-span-9 space-y-4">
+          {/* Equity curve */}
           {loading ? (
             <ChartSkeleton />
           ) : (
             <EquityChart title="Portfolio Equity Curve" values={equityCurve} dates={equityDates} />
           )}
 
+          {/* KPIs */}
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
             <KpiCard label="Sharpe" value={loading ? '—' : metrics?.sharpe ?? '—'} />
             <KpiCard label="Sortino" value={loading ? '—' : metrics?.sortino ?? '—'} />
@@ -317,15 +335,64 @@ export default function DashboardPage() {
             <KpiCard label="Max DD" value={loading ? '—' : metrics?.max_drawdown ?? '—'} />
           </div>
 
-          <div className="rounded-lg border p-4">
-            <div className="font-medium mb-1">Diagnostics</div>
-            <div className="text-sm text-neutral-400">
-              First run for this selection. Metrics initialized.
-              <br />
-              Run at least twice to compare changes.
+          {/* What-if Backtest */}
+          <div className="rounded-lg border p-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="font-medium">What-if Backtest</div>
+              <DownloadButtons dates={btDates} equity={btEquity} weights={btWeights} />
+            </div>
+
+            <AllocationEditor
+              symbols={tickers}
+              weights={editWeights}
+              onChange={setEditWeights}
+            />
+
+            <div className="flex gap-2">
+              <button
+                className="px-3 py-1 rounded bg-blue-600 text-white hover:bg-blue-500"
+                onClick={async () => {
+                  try {
+                    setError('');
+                    const r = await fetch('/api/backtest', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        tickers,
+                        start: dateRange.start,
+                        end: dateRange.end,
+                        weights: editWeights,
+                      }),
+                    });
+                    if (!r.ok) throw new Error(`Backtest failed: ${r.status}`);
+                    const d = await r.json();
+                    setBtDates(d.dates || []);
+                    setBtEquity(d.equity || []);
+                    setBtWeights(d.weightsUsed || {});
+                  } catch (e: any) {
+                    setError(e?.message || 'Backtest error');
+                  }
+                }}
+              >
+                Run Backtest
+              </button>
+              <div className="text-xs text-neutral-500 self-center">
+                Aligned daily closes; no costs; no rebalancing (yet).
+              </div>
+            </div>
+
+            <div className="mt-1 text-xs text-neutral-400">
+              {btEquity.length
+                ? `Result: ${(
+                    btEquity[0]
+                      ? btEquity[btEquity.length - 1] / btEquity[0] - 1
+                      : 0
+                  ).toLocaleString(undefined, { style: 'percent', minimumFractionDigits: 2 })}`
+                : 'No run yet.'}
             </div>
           </div>
 
+          {/* Macro sparklines */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {['CPIAUCSL', 'UNRATE', 'FEDFUNDS'].map((id) => (
               <ChartContainer
@@ -340,8 +407,10 @@ export default function DashboardPage() {
             ))}
           </div>
 
+          {/* Risk vs Return */}
           <RiskReturnChart points={riskPoints} />
 
+          {/* Fundamentals + News per ticker */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {tickers.map((s) => (
               <div key={`f-${s}`} className="space-y-4">

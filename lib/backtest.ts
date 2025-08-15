@@ -1,110 +1,91 @@
-import { fetchHistory, closesToReturns } from '@/lib/prices';
+// lib/backtest.ts
+import { fetchHistory, closesToReturns, Series } from '@/lib/prices';
 
-export type Rebalance = 'NONE' | 'M' | 'Q';
-
-export type BacktestInput = {
+export type Weights = Record<string, number>; // symbol -> weight (0..1), should sum ~1
+export type BacktestRequest = {
   tickers: string[];
-  weights?: Record<string, number>; // optional, defaults to equal-weight
   start?: string;
   end?: string;
-  rebalance?: Rebalance;
+  weights?: Weights;        // optional; if omitted we use equal-weight
+  rebalance?: 'none'|'monthly'|'quarterly'|'annual'; // future use (currently 'none')
+};
+export type BacktestResponse = {
+  dates: string[];    // ISO dates aligned across all tickers
+  equity: number[];   // normalized to 1.0 on first date
+  weightsUsed: Weights;
+  meta: { nAssets: number; start?: string; end?: string };
 };
 
-export type BacktestResult = {
-  dates: string[];
-  equity: number[];     // cumulative curve
-  returns: number[];    // daily returns
-  perTicker?: Record<string, { dates: string[]; closes: number[]; returns: number[] }>;
-};
-
-function filterRange<T extends { date: string }>(bars: T[], start?: string, end?: string) {
-  if (!start && !end) return bars;
-  const s = start ? new Date(start) : null;
-  const e = end ? new Date(end) : null;
-  return bars.filter(b => {
-    const d = new Date(b.date);
-    if (s && d < s) return false;
-    if (e && d > e) return false;
-    return true;
-  });
-}
-
-function normalizeWeights(tickers: string[], w?: Record<string, number>): number[] {
-  if (!w) return Array(tickers.length).fill(1 / tickers.length);
-  const arr = tickers.map(t => Math.max(0, w[t] ?? 0));
-  const sum = arr.reduce((a,b) => a + b, 0) || 1;
-  return arr.map(x => x / sum);
-}
-
-function rebalanceMask(len: number, mode: 'NONE'|'M'|'Q', dates: string[]): boolean[] {
-  const mask = Array(len).fill(false);
-  if (mode === 'NONE') { mask[0] = true; return mask; }
-  mask[0] = true;
-  for (let i = 1; i < len; i++) {
-    const d = new Date(dates[i]);
-    const prev = new Date(dates[i-1]);
-    const isMonthChange = d.getUTCMonth() !== prev.getUTCMonth() || d.getUTCFullYear() !== prev.getUTCFullYear();
-    if (mode === 'M' && isMonthChange) mask[i] = true;
-    if (mode === 'Q' && isMonthChange && [0,3,6,9].includes(d.getUTCMonth())) mask[i] = true;
-  }
-  return mask;
-}
-
-export async function runBacktest(inp: BacktestInput): Promise<BacktestResult> {
-  const tickers = inp.tickers.map(s => s.toUpperCase());
-  const series = await fetchHistory(tickers);
-
-  // Align on shortest length after date filtering
-  const filtered = series.map(s => {
-    const bars = filterRange(s.bars, inp.start, inp.end);
-    return { symbol: s.symbol.toUpperCase(), bars };
-  }).filter(s => s.bars.length > 2);
-
-  if (filtered.length === 0) {
-    return { dates: [], equity: [], returns: [] };
-  }
-
-  const datesArr = filtered.map(s => s.bars.map(b => b.date));
-  const minLen = Math.min(...datesArr.map(a => a.length));
-  const aligned = filtered.map(s => ({
-    symbol: s.symbol,
-    bars: s.bars.slice(s.bars.length - minLen)
-  }));
-
-  const dates = aligned[0].bars.map(b => b.date);
-  const closesMap: Record<string, number[]> = {};
-  for (const s of aligned) closesMap[s.symbol] = s.bars.map(b => b.close);
-
-  const returnsMap: Record<string, number[]> = {};
-  for (const s of aligned) returnsMap[s.symbol] = closesToReturns(closesMap[s.symbol]);
-
-  const weights = normalizeWeights(tickers, inp.weights);
-  const rebmask = rebalanceMask(returnsMap[aligned[0].symbol].length, (inp.rebalance || 'NONE'), dates.slice(1));
-
-  // Accumulate portfolio with periodic weight reset
-  let currentW = weights.slice(0, aligned.length);
-  const portR: number[] = [];
-  for (let i = 0; i < rebmask.length; i++) {
-    if (rebmask[i]) {
-      // reset to target weights on rebalance day
-      currentW = normalizeWeights(aligned.map(s => s.symbol), inp.weights);
+// align series by common dates
+function alignSeries(series: Series[]): { dates: string[]; closes: Record<string, number[]> } {
+  if (!series.length) return { dates: [], closes: {} };
+  // Build a date set intersection
+  const sets = series.map(s => new Set(s.bars.map(b => b.date)));
+  const common = new Set<string>(series[0].bars.map(b => b.date));
+  for (let i = 1; i < sets.length; i++) {
+    for (const d of Array.from(common)) {
+      if (!sets[i].has(d)) common.delete(d);
     }
-    const dayReturn = aligned.reduce((acc, s, idx) => acc + (currentW[idx] || 0) * returnsMap[s.symbol][i], 0);
-    portR.push(dayReturn);
+  }
+  const dates = Array.from(common).sort((a,b)=>a<b?-1:1);
+  const closes: Record<string, number[]> = {};
+  for (const s of series) {
+    const map = new Map(s.bars.map(b => [b.date, b.close] as const));
+    closes[s.symbol] = dates.map(d => Number(map.get(d)));
+  }
+  return { dates, closes };
+}
+
+export async function runBacktest(req: BacktestRequest): Promise<BacktestResponse> {
+  const syms = (req.tickers || []).map(s=>s.toUpperCase()).slice(0, 12);
+  if (!syms.length) return { dates: [], equity: [], weightsUsed: {}, meta: { nAssets: 0, start: req.start, end: req.end } };
+
+  const hist = await fetchHistory(syms, req.start, req.end); // uses FMP→Stooq fallback
+  const { dates, closes } = alignSeries(hist);
+  if (dates.length < 3) {
+    return { dates: [], equity: [], weightsUsed: {}, meta: { nAssets: syms.length, start: req.start, end: req.end } };
   }
 
-  const equity: number[] = [];
-  let eq = 1;
-  for (const r of portR) { eq *= (1+r); equity.push(eq); }
-
-  const perTicker: BacktestResult['perTicker'] = {};
-  for (const s of aligned) {
-    perTicker![s.symbol] = {
-      dates: s.bars.map(b => b.date),
-      closes: closesMap[s.symbol],
-      returns: returnsMap[s.symbol]
-    };
+  // weights (equal-weight if not provided)
+  const w: Weights = {};
+  const activeSyms = syms.filter(s => (closes[s] || []).length === dates.length);
+  const provided = req.weights && Object.keys(req.weights).length ? req.weights : undefined;
+  if (provided) {
+    // keep only symbols we actually have aligned data for
+    const kept = Object.entries(provided).filter(([s, val]) => activeSyms.includes(s.toUpperCase()) && Number.isFinite(val));
+    const sum = kept.reduce((a, [,v]) => a + Number(v), 0);
+    for (const [s, v] of kept) w[s.toUpperCase()] = sum ? Number(v) / sum : 0;
+  } else {
+    const ew = activeSyms.length ? 1 / activeSyms.length : 0;
+    for (const s of activeSyms) w[s] = ew;
   }
 
-  return { dates: dates.slice(1), equity, returns: portR, perTicker };
+  // compute daily portfolio returns from closes
+  // daily return per asset r_t = close_t / close_{t-1} - 1
+  const portRets: number[] = [];
+  for (let i = 1; i < dates.length; i++) {
+    let r = 0;
+    for (const s of Object.keys(w)) {
+      const cs = closes[s];
+      if (!cs) continue;
+      const prev = cs[i-1];
+      const cur  = cs[i];
+      if (Number.isFinite(prev) && Number.isFinite(cur) && prev !== 0) {
+        r += w[s] * (cur / prev - 1);
+      }
+    }
+    portRets.push(r);
+  }
+  // equity
+  const equity: number[] = [1];
+  for (const r of portRets) {
+    const last = equity[equity.length-1];
+    equity.push(last * (1 + r));
+  }
+  return {
+    dates,
+    equity,
+    weightsUsed: w,
+    meta: { nAssets: Object.keys(w).length, start: req.start, end: req.end },
+  };
 }
