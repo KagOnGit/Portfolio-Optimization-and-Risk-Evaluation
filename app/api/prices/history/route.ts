@@ -1,50 +1,45 @@
 // app/api/prices/history/route.ts
 import { NextResponse } from 'next/server';
-import { fetchHistory } from '@/lib/prices';
 
-type Req = { tickers?: string[]; start?: string; end?: string };
+type Body = {
+  tickers?: string[];
+  start?: string;
+  end?: string;
+};
 
-function isISODate(s?: string): s is string {
-  return !!s && /^\d{4}-\d{2}-\d{2}$/.test(s);
+function genSeries(symbol: string, n = 252) {
+  // deterministic pseudo-random walk based on symbol hash
+  let seed = Array.from(symbol).reduce((a, c) => a + c.charCodeAt(0), 0);
+  function rnd() {
+    seed = (seed * 1664525 + 1013904223) % 2 ** 32;
+    return (seed / 2 ** 32) - 0.5;
+  }
+  const bars: { date: string; close: number }[] = [];
+  let price = 100;
+  const today = new Date();
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    // ~1% daily vol synthetic series
+    const ret = rnd() * 0.02;
+    price = Math.max(1, price * (1 + ret));
+    bars.push({ date: d.toISOString().slice(0, 10), close: +price.toFixed(2) });
+  }
+  return { symbol, bars };
 }
 
 export async function POST(req: Request) {
-  try {
-    const body = ((await req.json().catch(() => ({}))) as Partial<Req>) || {};
+  let body: Body = {};
+  try { body = await req.json(); } catch {}
+  const tickers = (body.tickers?.length ? body.tickers : ['SPY', 'QQQ', 'TLT'])
+    .map(s => s.toUpperCase())
+    .slice(0, 12);
 
-    // Normalize tickers: default, sanitize, de-dupe, cap
-    const rawTickers = Array.isArray(body.tickers) && body.tickers.length
-      ? body.tickers
-      : ['SPY', 'QQQ', 'TLT'];
+  const series = tickers.map(t => genSeries(t, 300));
+  return NextResponse.json({ series });
+}
 
-    const tickers = Array.from(
-      new Set(
-        rawTickers
-          .map((t) => (typeof t === 'string' ? t.trim().toUpperCase() : ''))
-          .filter(Boolean)
-      )
-    ).slice(0, 12);
-
-    if (tickers.length === 0) {
-      return NextResponse.json({ error: 'No valid tickers provided' }, { status: 400 });
-    }
-
-    // Validate dates (optional)
-    const start = isISODate(body.start) ? body.start : undefined;
-    const end = isISODate(body.end) ? body.end : undefined;
-
-    // First attempt: respect date filters
-    let series = await fetchHistory(tickers, start, end);
-
-    // If everything is empty, retry without from/to (some sources ignore filters)
-    const hasAnyBars = series.some((row) => Array.isArray(row.bars) && row.bars.length > 3);
-    if (!hasAnyBars) {
-      series = await fetchHistory(tickers, undefined, undefined);
-    }
-
-    return NextResponse.json({ series });
-  } catch (e: unknown) {
-    const msg = e instanceof Error ? e.message : 'history error';
-    return NextResponse.json({ error: msg }, { status: 500 });
-  }
+export async function GET() {
+  // convenience
+  return NextResponse.json({ info: 'POST { tickers: string[], start?: string, end?: string }' });
 }
