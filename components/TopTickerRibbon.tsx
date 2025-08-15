@@ -21,11 +21,13 @@ function classByChange(changePct: number | null) {
 export default function TopTickerRibbon({
   symbols = DEFAULT_TICKERS,
   refreshMs = 60_000,
-  pxPerSec = 120,
+  pxPerSec = 120, // lower = slower; higher = faster
+  hoverPause = false,
 }: {
   symbols?: string[];
   refreshMs?: number;
   pxPerSec?: number;
+  hoverPause?: boolean;
 }) {
   const [rows, setRows] = useState<TickerItem[]>(
     symbols.map(s => ({ symbol: s.toUpperCase(), price: null, changePct: null }))
@@ -34,6 +36,7 @@ export default function TopTickerRibbon({
   const trackRef = useRef<HTMLDivElement | null>(null);
   const [duration, setDuration] = useState<number>(30);
 
+  // Fetch quotes from server route (which computes changePct with daily fallback)
   async function load() {
     try {
       setErr('');
@@ -56,12 +59,14 @@ export default function TopTickerRibbon({
           changePct: Number.isFinite(cp) ? cp : null,
         };
       });
+
       setRows(mapped);
     } catch (e: any) {
       setErr(e?.message || 'Ticker load error');
     }
   }
 
+  // initial + interval refresh
   useEffect(() => {
     load();
     const id = setInterval(load, refreshMs);
@@ -69,26 +74,26 @@ export default function TopTickerRibbon({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbols.join(','), refreshMs]);
 
-  // We render 2 identical sets; animation moves by -50% = one-set width → seamless loop
+  // Render two identical sets; animation translates by -50% → seamless loop
   const setData = useMemo(() => rows, [rows]);
 
-  // Measure width of one set to compute consistent speed
+  // Measure one-set width (track renders 2 sets) to compute consistent speed
   useEffect(() => {
     const el = trackRef.current;
     if (!el) return;
-    const oneSetWidth = el.scrollWidth / 2; // track renders two sets
+    const oneSetWidth = el.scrollWidth / 2;
     if (oneSetWidth > 0) {
       setDuration(Math.max(12, oneSetWidth / pxPerSec)); // seconds = pixels / pxPerSec
     }
   }, [rows, pxPerSec]);
 
   return (
-    <div className="sticky top-0 z-40 w-full border-b bg-white/85 backdrop-blur supports-[backdrop-filter]:bg-white/60 dark:bg-neutral-950/85 dark:supports-[backdrop-filter]:bg-neutral-950/60">
+    <div className="sticky top-0 z-40 w-full border-b bg-neutral-950/85 backdrop-blur supports-[backdrop-filter]:bg-neutral-950/60">
       <div className="mx-auto max-w-screen-2xl">
         <div className="h-10 overflow-hidden relative ticker-mask">
           <div
             ref={trackRef}
-            className="ticker-track whitespace-nowrap"
+            className={`ticker-track whitespace-nowrap ${hoverPause ? 'hover:[animation-play-state:paused]' : ''}`}
             style={{ ['--dur' as any]: `${duration}s` }}
             aria-live="polite"
           >
@@ -108,9 +113,9 @@ export default function TopTickerRibbon({
                       : item.price.toLocaleString();
                   return (
                     <div key={`${rep}-${item.symbol}-${idx}`} className="flex items-center gap-1 text-sm">
-                      <span className="font-medium text-neutral-700 dark:text-neutral-200">{item.symbol}</span>
+                      <span className="font-medium text-neutral-200">{item.symbol}</span>
                       <span className="text-neutral-500">•</span>
-                      <span className="tabular-nums text-neutral-800 dark:text-neutral-100">{price}</span>
+                      <span className="tabular-nums text-neutral-100">{price}</span>
                       <span className={`tabular-nums ${cls}`}>{pct}</span>
                     </div>
                   );
@@ -120,7 +125,7 @@ export default function TopTickerRibbon({
           </div>
         </div>
         {err ? (
-          <div className="px-3 pb-2 text-xs text-red-600 dark:text-red-400">{err}</div>
+          <div className="px-3 pb-2 text-xs text-red-400">{err}</div>
         ) : null}
       </div>
     </div>
