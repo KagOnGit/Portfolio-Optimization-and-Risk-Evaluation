@@ -3,7 +3,6 @@ import { NextResponse } from 'next/server';
 import { sharpe, sortino, histVaR, histCVaR, maxDrawdown } from '@/lib/math';
 import { fetchHistory, closesToReturns } from '@/lib/prices';
 
-// Optional server-side date filter for bars
 function filterByDate<T extends { date: string }>(bars: T[], start?: string, end?: string) {
   if (!start && !end) return bars;
   const s = start ? new Date(start) : null;
@@ -17,54 +16,57 @@ function filterByDate<T extends { date: string }>(bars: T[], start?: string, end
 }
 
 export async function POST(req: Request) {
+  const startedAt = Date.now();
   try {
     const body = await req.json().catch(() => ({}));
-    const {
-      tickers = ['SPY', 'QQQ', 'TLT'],
-      start,
-      end,
-    }: { tickers?: string[]; start?: string; end?: string } = body || {};
+    const { tickers = ['SPY', 'QQQ', 'TLT'], start, end } = (body || {}) as {
+      tickers?: string[];
+      start?: string;
+      end?: string;
+    };
 
-    const upper = (tickers as string[]).map((s) => s.toUpperCase()).slice(0, 12);
+    const upper = (tickers || []).map((s) => s.toUpperCase()).slice(0, 12);
+    if (upper.length === 0) {
+      return NextResponse.json({ error: 'No tickers provided' }, { status: 400 });
+    }
 
-    // Fetch historical bars
     const series = await fetchHistory(upper);
 
-    // Map closes and filter invalid/short series
+    // Map to closes, filter invalid, drop very short series
     const closeArrays = series.map((s) => {
-      const filtered = filterByDate(s.bars, start, end);
-      const closes = filtered.map((b) => b.close).filter((n) => Number.isFinite(n));
+      const f = filterByDate(s.bars, start, end);
+      const closes = f.map((b) => Number(b.close)).filter((n) => Number.isFinite(n));
       return closes;
     });
 
-    // Keep only tickers with enough data
-    const validArrays = closeArrays.filter((arr) => arr.length > 2);
-    if (validArrays.length === 0) {
-      return NextResponse.json(
-        { error: 'No valid price data for chosen tickers/date range' },
-        { status: 400 }
-      );
+    const valid = closeArrays.filter((a) => a.length > 2);
+    if (valid.length === 0) {
+      console.warn('[metrics] no-valid-series', { tickers: upper, start, end, sizes: closeArrays.map(a => a.length) });
+      return NextResponse.json({ error: 'No valid price data for chosen tickers/date range' }, { status: 400 });
     }
 
-    // Align by minimum length to avoid NaNs
-    const minLen = Math.min(...validArrays.map((a) => a.length));
-    const aligned = validArrays.map((a) => a.slice(a.length - minLen));
+    // Align to shortest length
+    const minLen = Math.min(...valid.map((a) => a.length));
+    const aligned = valid.map((a) => a.slice(a.length - minLen));
 
-    // Convert closes to returns and align again
+    // Returns
     const returnsArrays = aligned.map((arr) => closesToReturns(arr));
     const minR = Math.min(...returnsArrays.map((a) => a.length));
     if (minR < 2) {
+      console.warn('[metrics] not-enough-returns', { tickers: upper, start, end, minR });
       return NextResponse.json({ error: 'Not enough data to compute returns' }, { status: 400 });
     }
     const retAligned = returnsArrays.map((a) => a.slice(a.length - minR));
 
-    // Equal-weighted portfolio returns
+    // Equal-weight portfolio
     const portReturns: number[] = [];
     for (let i = 0; i < minR; i++) {
-      portReturns.push(retAligned.reduce((acc, ar) => acc + ar[i], 0) / retAligned.length);
+      let sum = 0;
+      for (const ar of retAligned) sum += ar[i];
+      portReturns.push(sum / retAligned.length);
     }
 
-    // Build an equity curve from returns
+    // Equity curve
     const equityCurve: number[] = [];
     let eq = 1;
     for (const r of portReturns) {
@@ -72,7 +74,7 @@ export async function POST(req: Request) {
       equityCurve.push(eq);
     }
 
-    // Risk metrics
+    // Metrics
     const metrics = {
       sharpe: +sharpe(portReturns).toFixed(3),
       sortino: +sortino(portReturns).toFixed(3),
@@ -81,13 +83,13 @@ export async function POST(req: Request) {
       max_drawdown: +maxDrawdown(equityCurve).toFixed(4),
     };
 
-    return NextResponse.json({ metrics, equityCurve });
+    return NextResponse.json({ metrics, equityCurve, elapsedMs: Date.now() - startedAt });
   } catch (e: any) {
-    // Return a clear 500 with message (keeps client UI from hanging)
+    console.error('[metrics] 500', { message: e?.message, stack: e?.stack });
     return NextResponse.json({ error: e?.message || 'metrics error' }, { status: 500 });
   }
 }
 
 export async function GET() {
-  return NextResponse.json({ info: 'Use POST with { tickers, start, end } to compute real metrics.' });
+  return NextResponse.json({ info: 'Use POST with { tickers, start, end }' });
 }
