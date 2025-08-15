@@ -3,11 +3,12 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-type Snapshot = Record<string, { last: number | null; changePct: number | null }>;
+type Quote = { last: number | null; changePct: number | null };
+type Quotes = Record<string, Quote>;
 
 export default function TopTickerRibbon({
   symbols = ['SPY','QQQ','AAPL','MSFT','TLT','GLD','BTC-USD'],
-  refreshMs = 45000,
+  refreshMs = 45_000,
   pxPerSec = 120,
   onSelect,
 }: {
@@ -16,83 +17,92 @@ export default function TopTickerRibbon({
   pxPerSec?: number;
   onSelect?: (symbol: string) => void;
 }) {
-  const [snap, setSnap] = useState<Snapshot>({});
+  const [quotes, setQuotes] = useState<Quotes>({});
+  const [duration, setDuration] = useState<number>(24);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [duration, setDuration] = useState<number>(30);
 
-  // fetch quotes
+  async function load() {
+    try {
+      const r = await fetch('/api/prices/quote', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols }),
+      });
+      if (!r.ok) return;
+      const j = await r.json();
+      setQuotes(j || {});
+    } catch {}
+  }
+
   useEffect(() => {
-    let alive = true;
-    async function load() {
-      try {
-        const r = await fetch('/api/prices/quote', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbols }),
-        });
-        if (!r.ok) return;
-        const j = (await r.json()) as Snapshot;
-        if (alive) setSnap(j);
-      } catch {}
-    }
     load();
-    const t = setInterval(load, Math.max(8000, refreshMs));
-    return () => { alive = false; clearInterval(t); };
+    const id = setInterval(load, refreshMs);
+    return () => clearInterval(id);
   }, [symbols.join(','), refreshMs]);
 
-  // update duration to content width
+  // measure width to set animation duration (smooth on any screen)
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const oneSet = el.scrollWidth / 2; // track holds 2× content
-    if (!oneSet) return;
-    setDuration(Math.max(18, oneSet / pxPerSec));
-  }, [snap, pxPerSec]);
+    const oneSetWidth = el.scrollWidth / 3; // we render 3x below
+    if (!oneSetWidth) return;
+    const d = Math.max(14, oneSetWidth / pxPerSec);
+    setDuration(d);
+  }, [quotes, pxPerSec]);
 
   const items = useMemo(() => {
+    // normalize into an ordered list
     return symbols.map((s) => {
-      const q = snap[s.toUpperCase()];
+      const q = quotes[s.toUpperCase()];
       const last = Number.isFinite(q?.last as number) ? (q!.last as number) : null;
-      const cp = Number.isFinite(q?.changePct as number) ? (q!.changePct as number) : null;
-      return { s, last, cp };
+      const pct = Number.isFinite(q?.changePct as number) ? (q!.changePct as number) : null;
+      return { symbol: s.toUpperCase(), last, pct };
     });
-  }, [symbols.join(','), snap]);
+  }, [quotes, symbols]);
 
-  const fmtPrice = (v: number | null) =>
-    v == null ? '—' : `$${Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(v)}`;
+  const prettyPrice = (n: number | null) => {
+    if (n == null) return '—';
+    // dollar sign for everything to keep it consistent/elegant
+    const abs = Math.abs(n) < 10 ? n.toFixed(2) : Math.abs(n) < 100 ? n.toFixed(2) : n.toFixed(2);
+    return `$${abs}`;
+  };
 
-  const fmtPct = (v: number | null) =>
-    v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+  const prettyPct = (p: number | null) => {
+    if (p == null) return '—%';
+    const sign = p > 0 ? '+' : p < 0 ? '' : '';
+    return `${sign}${p.toFixed(2)}%`;
+  };
+
+  const pctClass = (p: number | null) =>
+    p == null
+      ? 'text-neutral-400'
+      : p > 0
+      ? 'text-emerald-400'
+      : p < 0
+      ? 'text-red-400'
+      : 'text-neutral-300';
+
+  // triple the list to create a seamless infinite scroll
+  const tripled = [...items, ...items, ...items];
 
   return (
-    <div className="sticky top-0 z-40 bg-neutral-950 border-b border-neutral-800">
+    <div className="sticky top-0 z-40 border-b bg-black/80 backdrop-blur supports-[backdrop-filter]:bg-black/60">
       <div className="overflow-hidden ticker-mask">
         <div
           ref={containerRef}
-          className="ticker-track"
+          className="ticker-track whitespace-nowrap"
           style={{ ['--dur' as any]: `${duration}s` }}
         >
-          {[...Array(2)].map((_, k) => (
-            <div key={k} className="flex gap-8 px-6">
-              {items.map(({ s, last, cp }) => {
-                const up = (cp ?? 0) >= 0;
-                const pctClass = cp == null
-                  ? 'text-neutral-400'
-                  : up ? 'text-emerald-400' : 'text-rose-400';
-                return (
-                  <button
-                    key={`${k}-${s}`}
-                    className="flex items-center gap-2 text-sm py-2 text-neutral-200 hover:text-white"
-                    onClick={() => onSelect?.(s)}
-                    aria-label={`Select ${s}`}
-                  >
-                    <span className="font-medium">{s}</span>
-                    <span className="opacity-60">•</span>
-                    <span className="tabular-nums">{fmtPrice(last)}</span>
-                    <span className={`tabular-nums ${pctClass}`}>{fmtPct(cp)}</span>
-                  </button>
-                );
-              })}
+          {tripled.map((it, i) => (
+            <div
+              key={`${it.symbol}-${i}`}
+              className="inline-flex items-center gap-2 px-5 py-2 cursor-pointer hover:bg-white/5"
+              onClick={() => onSelect?.(it.symbol)}
+            >
+              <span className="font-medium text-neutral-200">{it.symbol}</span>
+              <span className="text-neutral-400">•</span>
+              <span className="tabular-nums text-neutral-200">{prettyPrice(it.last)}</span>
+              <span className={`tabular-nums ${pctClass(it.pct)}`}>{prettyPct(it.pct)}</span>
             </div>
           ))}
         </div>
