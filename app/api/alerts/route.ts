@@ -1,7 +1,7 @@
 // app/api/alerts/route.ts
 import { NextResponse } from 'next/server';
 import { evaluateRules, Rule } from '@/lib/alerts';
-import { fetchQuoteSnapshot } from '@/lib/prices';
+import { fetchQuoteSnapshotServer } from '@/lib/prices';
 
 type Body = { tickers?: string[]; rules?: Rule[] };
 
@@ -19,10 +19,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'No tickers provided' }, { status: 400 });
     }
 
-    // Use the correct function from lib/prices
-    const snapshot = await fetchQuoteSnapshot(tickers);
+    // Use the server-side snapshot fetcher from lib/prices
+    const snapshot = await fetchQuoteSnapshotServer(tickers);
 
-    // Normalize for evaluator
+    // Normalize into the shape the evaluator expects
     const quotes: Record<string, { last: number | null; changePct: number | null }> = {};
     for (const sym of tickers) {
       const q = (snapshot as any)[sym] || {};
@@ -37,7 +37,7 @@ export async function POST(req: Request) {
     const evals = evaluateRules(quotes, rules);
     const matched = evals.filter((e) => e.matched);
 
-    // Helpful server logs
+    // Helpful logs in Vercel
     console.log('[alerts] evaluated', {
       tickers,
       rules,
@@ -57,7 +57,7 @@ export async function POST(req: Request) {
   }
 }
 
-// Convenience endpoint
+// Simple GET to document usage
 export async function GET() {
   return NextResponse.json({
     info: 'POST { tickers: string[], rules: Rule[] }',
