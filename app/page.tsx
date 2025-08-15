@@ -50,7 +50,7 @@ function calcRange(preset: Exclude<Preset, 'CUSTOM'>) {
   return { start, end };
 }
 
-// Annualize mean/stdev and compute Sharpe (risk-free ~ 0 for simplicity)
+// Annualize mean/stdev and compute Sharpe (risk-free ~ 0)
 function annualize(returns: number[]) {
   const n = returns.length;
   if (!n) return { mu: 0, sigma: 0, sharpe: 0 };
@@ -74,9 +74,8 @@ export default function DashboardPage() {
   // Core state
   const [weights, setWeights] = useState<Record<string, number>>({});
   const [metrics, setMetrics] = useState<Metrics | null>(null);
-  /** equity values for the chart */
+  // equity curve + dates (for the x-axis)
   const [equityCurve, setEquityCurve] = useState<number[]>([]);
-  /** matching ISO dates */
   const [equityDates, setEquityDates] = useState<string[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>('');
@@ -115,7 +114,7 @@ export default function DashboardPage() {
     }
   }
 
-  // Metrics + Equity curve (now also keeps "dates" for x-axis)
+  // Metrics + Equity curve (keeps "dates" for x-axis)
   useEffect(() => {
     const ctrl = new AbortController();
     let mounted = true;
@@ -168,36 +167,58 @@ export default function DashboardPage() {
     };
   }, [tickers.join(','), dateRange.start, dateRange.end]);
 
-  // Macro series
+  // Macro series with fallback if window is too narrow
   useEffect(() => {
     const ctrl = new AbortController();
     let mounted = true;
+
     (async () => {
       try {
-        const resp = await fetch('/api/macro/fred', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            series: ['CPIAUCSL', 'UNRATE', 'FEDFUNDS'],
-            start: dateRange.start,
-            end: dateRange.end,
-          }),
-          signal: ctrl.signal,
-        });
-        if (!resp.ok) return;
-        const j = await resp.json();
-        if (!mounted) return;
-        const map: MacroMap = {};
-        if (Array.isArray(j?.data)) {
-          for (const s of j.data) {
+        async function fetchRange(start?: string, end?: string) {
+          const res = await fetch('/api/macro/fred', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ series: ['CPIAUCSL', 'UNRATE', 'FEDFUNDS'], start, end }),
+            signal: ctrl.signal,
+          });
+          if (!res.ok) return null;
+          return res.json();
+        }
+
+        // 1) Try user-selected window
+        const j1 = await fetchRange(dateRange.start, dateRange.end);
+        const toNums = (arr: any[]) =>
+          Array.isArray(arr) ? arr.map((o) => Number(o?.value)).filter((n) => Number.isFinite(n)) : [];
+
+        let map: MacroMap = {};
+        if (j1 && Array.isArray(j1.data)) {
+          for (const s of j1.data) {
             const id = String(s?.id || '');
-            const arr = Array.isArray(s?.observations) ? toNumbers(s.observations) : [];
+            const arr = toNums(s?.observations || []);
             if (id) map[id] = arr;
           }
         }
-        setMacro(map);
-      } catch {}
+
+        // 2) If empty, widen to a long history (since 1990)
+        const allEmpty = ['CPIAUCSL', 'UNRATE', 'FEDFUNDS'].every((k) => !map[k]?.length);
+        if (allEmpty) {
+          const j2 = await fetchRange('1990-01-01', undefined);
+          map = {};
+          if (j2 && Array.isArray(j2.data)) {
+            for (const s of j2.data) {
+              const id = String(s?.id || '');
+              const arr = toNums(s?.observations || []);
+              if (id) map[id] = arr;
+            }
+          }
+        }
+
+        if (mounted) setMacro(map);
+      } catch {
+        /* ignore */
+      }
     })();
+
     return () => {
       mounted = false;
       ctrl.abort();
@@ -239,6 +260,7 @@ export default function DashboardPage() {
   useEffect(() => {
     const ctrl = new AbortController();
     let mounted = true;
+
     (async () => {
       try {
         const r = await fetch('/api/prices/history', {
@@ -260,8 +282,11 @@ export default function DashboardPage() {
           points.push({ x: sigma, y: mu, label: s.symbol, sharpe });
         }
         if (mounted) setRiskPoints(points);
-      } catch {}
+      } catch {
+        /* ignore */
+      }
     })();
+
     return () => {
       mounted = false;
       ctrl.abort();
@@ -284,9 +309,7 @@ export default function DashboardPage() {
           <button
             key={v}
             className={`px-3 py-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
-              selectedPreset === v
-                ? 'bg-blue-600 text-white'
-                : 'bg-neutral-800 text-neutral-200 hover:bg-neutral-700'
+              selectedPreset === v ? 'bg-blue-600 text-white' : 'bg-neutral-800 text-neutral-200 hover:bg-neutral-700'
             }`}
             onClick={() => handlePresetClick(v)}
           >
@@ -331,11 +354,7 @@ export default function DashboardPage() {
         {/* Right column */}
         <div className="col-span-12 md:col-span-9 space-y-4">
           {/* Equity curve (date-aware) */}
-          {loading ? (
-            <ChartSkeleton />
-          ) : (
-            <EquityChart title="Portfolio Equity Curve" values={equityCurve} dates={equityDates} />
-          )}
+          {loading ? <ChartSkeleton /> : <EquityChart title="Portfolio Equity Curve" values={equityCurve} dates={equityDates} />}
 
           {/* KPIs */}
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
@@ -362,11 +381,7 @@ export default function DashboardPage() {
               <ChartContainer
                 key={id}
                 title={id}
-                series={
-                  macro[id]
-                    ? (macro[id].slice(-30).map((y, i) => ({ x: i, y })) as { x: number; y: number }[])
-                    : []
-                }
+                series={macro[id] ? (macro[id].slice(-30).map((y, i) => ({ x: i, y })) as { x: number; y: number }[]) : []}
               />
             ))}
           </div>

@@ -1,60 +1,60 @@
 // components/FundamentalsCard.tsx
-import React from 'react';
+'use client';
 
-type Data = {
-  marketCap?: number | null;
-  pe?: number | null;
-  forwardPE?: number | null;
-  dividendYield?: number | null; // fraction
-  beta?: number | null;
-  week52High?: number | null;
-  week52Low?: number | null;
+type Fundamentals = {
+  symbol: string;
+  marketCap: number | null;
+  pe: number | null;
+  forwardPE: number | null;
+  dividendYield: number | null; // 0.0065 => 0.65% if that’s how API provides; we’ll format safely
+  beta: number | null;
+  week52High: number | null;
+  week52Low: number | null;
 };
 
-function fmtNum(n?: number | null) {
-  if (n == null || !Number.isFinite(n)) return null;
-  if (Math.abs(n) >= 1e12) return (n / 1e12).toFixed(2) + 'T';
-  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + 'B';
-  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + 'M';
-  return n.toLocaleString();
-}
+export default function FundamentalsCard({
+  symbol,
+  data,
+}: {
+  symbol: string;
+  data: Partial<Fundamentals> | null | undefined;
+}) {
+  const fmtNum = (n: number | null | undefined, digits = 2) =>
+    Number.isFinite(Number(n)) ? Number(n).toLocaleString(undefined, { maximumFractionDigits: digits }) : '—';
 
-function fmtPctFraction(n?: number | null) {
-  if (n == null || !Number.isFinite(n)) return null;
-  return (n * 100).toFixed(2) + '%';
-}
-
-function Row({ label, value }: { label: string; value: string | null }) {
-  if (value == null) return null; // hide empty rows for a clean card
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-sm text-neutral-400">{label}</span>
-      <span className="text-sm">{value}</span>
-    </div>
-  );
-}
-
-export default function FundamentalsCard({ symbol, data }: { symbol: string; data: Data }) {
-  const rows: Array<{ label: string; value: string | null }> = [
-    { label: 'Market Cap', value: fmtNum(data.marketCap) },
-    { label: 'P/E', value: fmtNum(data.pe) },
-    { label: 'Forward P/E', value: fmtNum(data.forwardPE) },
-    { label: 'Dividend Yield', value: fmtPctFraction(data.dividendYield) },
-    { label: 'Beta', value: fmtNum(data.beta) },
-    { label: '52W High', value: fmtNum(data.week52High) },
-    { label: '52W Low', value: fmtNum(data.week52Low) },
-  ];
-
-  const shown = rows.filter((r) => r.value !== null);
+  const fmtPct = (n: number | null | undefined) => {
+    if (!Number.isFinite(Number(n))) return '—';
+    // Try to guess if already a fraction or a percent
+    const val = Number(n);
+    const pct = val > 1 ? val : val * 100;
+    return `${pct.toFixed(2)}%`;
+  };
 
   return (
-    <div className="rounded-lg border p-4 bg-white dark:bg-neutral-900">
-      <div className="font-medium mb-3">{symbol}</div>
-      {shown.length === 0 ? (
-        <div className="text-sm text-neutral-500">Not available for this symbol.</div>
-      ) : (
-        <div className="space-y-1">{shown.map((r) => <Row key={r.label} {...r} />)}</div>
-      )}
+    <div className="rounded-lg border p-4">
+      <div className="text-lg font-semibold mb-3">{symbol}</div>
+      <div className="grid grid-cols-2 gap-y-2">
+        <div>Market Cap</div>
+        <div className="text-right">{fmtNum(data?.marketCap, 0)}</div>
+
+        <div>P/E</div>
+        <div className="text-right">{fmtNum(data?.pe, 2)}</div>
+
+        <div>Forward P/E</div>
+        <div className="text-right">{fmtNum(data?.forwardPE, 2)}</div>
+
+        <div>Dividend Yield</div>
+        <div className="text-right">{fmtPct(data?.dividendYield)}</div>
+
+        <div>Beta</div>
+        <div className="text-right">{fmtNum(data?.beta, 3)}</div>
+
+        <div>52W High</div>
+        <div className="text-right">{fmtNum(data?.week52High, 2)}</div>
+
+        <div>52W Low</div>
+        <div className="text-right">{fmtNum(data?.week52Low, 2)}</div>
+      </div>
     </div>
   );
 }
