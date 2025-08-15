@@ -1,35 +1,131 @@
 // app/api/metrics/route.ts
 import { NextResponse } from 'next/server';
-import { fetchHistory, closesToReturns, Series } from '@/lib/prices';
+import { fetchHistory, Bar, Series, closesToReturns } from '@/lib/prices';
 
 type Body = {
   tickers?: string[];
   start?: string;
   end?: string;
-  weights?: Record<string, number>; // optional override
+  method?: 'equal_weight' | string; // future methods can plug in
 };
 
-function r3(x: unknown): number | null {
-  const n = Number(x);
-  return Number.isFinite(n) ? Math.round(n * 1000) / 1000 : null;
+function alignByDate(series: Series[]): { dates: string[]; map: Record<string, number[]> } {
+  // Build master date set
+  const set = new Set<string>();
+  for (const s of series) for (const b of s.bars) set.add(b.date);
+  const dates = Array.from(set).sort(); // ascending
+
+  // Map symbol -> closes[] aligned to dates (undefined holes are skipped later)
+  const map: Record<string, number[]> = {};
+  for (const s of series) {
+    const byDate = new Map<string, number>();
+    s.bars.forEach((b) => byDate.set(b.date, b.close));
+    map[s.symbol] = dates.map((d) => {
+      const v = byDate.get(d);
+      return Number.isFinite(v as number) ? (v as number) : NaN;
+    });
+  }
+  return { dates, map };
 }
 
-function maxDrawdown(curve: number[]): number {
-  let peak = curve[0] ?? 1;
+function toPortfolioEquity(
+  alignedCloses: Record<string, number[]>,
+  method: string
+): { equity: number[]; weights: Record<string, number> } {
+  const syms = Object.keys(alignedCloses);
+  const weights: Record<string, number> = {};
+  if (syms.length === 0) return { equity: [], weights };
+
+  // Equal-weight
+  const w = 1 / syms.length;
+  for (const s of syms) weights[s] = w;
+
+  // Build portfolio daily return where all required closes exist
+  const N = alignedCloses[syms[0]].length;
+  const equity: number[] = [];
+  let cum = 1;
+  equity.push(cum);
+
+  for (let i = 1; i < N; i++) {
+    let dayRet = 0;
+    let usable = 0;
+
+    for (const s of syms) {
+      const cPrev = alignedCloses[s][i - 1];
+      const cNow = alignedCloses[s][i];
+      if (Number.isFinite(cPrev) && Number.isFinite(cNow) && cPrev !== 0) {
+        const r = cNow / cPrev - 1;
+        dayRet += r * weights[s];
+        usable++;
+      }
+    }
+
+    // if nothing usable this day, repeat previous equity
+    if (usable === 0) {
+      equity.push(cum);
+    } else {
+      cum *= 1 + dayRet;
+      equity.push(cum);
+    }
+  }
+  return { equity, weights };
+}
+
+function statsFromEquity(equity: number[]) {
+  if (!equity || equity.length < 3) {
+    return { sharpe: 0, sortino: 0, var: 0, cvar: 0, max_drawdown: 0 };
+  }
+  // convert equity to daily returns
+  const rets: number[] = [];
+  for (let i = 1; i < equity.length; i++) {
+    const a = equity[i - 1];
+    const b = equity[i];
+    if (a) rets.push(b / a - 1);
+  }
+  if (rets.length < 3) {
+    return { sharpe: 0, sortino: 0, var: 0, cvar: 0, max_drawdown: 0 };
+  }
+
+  // annualization (252 trading days)
+  const n = rets.length;
+  const mean = rets.reduce((x, y) => x + y, 0) / n;
+  const variance = rets.reduce((x, y) => x + (y - mean) ** 2, 0) / n;
+  const sigmaD = Math.sqrt(variance);
+  const muA = mean * 252;
+  const sigA = sigmaD * Math.sqrt(252);
+  const sharpe = sigA ? muA / sigA : 0;
+
+  // Sortino (downside stdev)
+  const downs = rets.filter((r) => r < 0);
+  const downVar =
+    downs.length > 0
+      ? downs.reduce((x, y) => x + y ** 2, 0) / downs.length
+      : 0;
+  const downSigA = Math.sqrt(downVar) * Math.sqrt(252);
+  const sortino = downSigA ? muA / downSigA : 0;
+
+  // Simple historical (C)VaR @ 95%
+  const sorted = [...rets].sort((a, b) => a - b);
+  const idx = Math.floor(0.05 * sorted.length);
+  const var95 = sorted[idx] ?? 0;
+  const cvar95 = sorted.slice(0, idx + 1).reduce((x, y) => x + y, 0) / (idx + 1 || 1);
+
+  // Max Drawdown
+  let peak = equity[0];
   let mdd = 0;
-  for (const v of curve) {
-    peak = Math.max(peak, v);
+  for (const v of equity) {
+    if (v > peak) peak = v;
     const dd = peak ? (peak - v) / peak : 0;
     if (dd > mdd) mdd = dd;
   }
-  return mdd; // 0..1
-}
 
-function percentile(arr: number[], p: number): number {
-  if (!arr.length) return 0;
-  const a = [...arr].sort((x, y) => x - y);
-  const idx = Math.min(a.length - 1, Math.max(0, Math.floor((p / 100) * a.length)));
-  return a[idx];
+  return {
+    sharpe,
+    sortino,
+    var: Math.abs(var95),      // report as positive magnitude
+    cvar: Math.abs(cvar95),    // report as positive magnitude
+    max_drawdown: mdd,
+  };
 }
 
 export async function POST(req: Request) {
@@ -37,144 +133,50 @@ export async function POST(req: Request) {
     const body = (await req.json().catch(() => ({}))) as Body;
     const tickers = (body.tickers && body.tickers.length ? body.tickers : ['SPY', 'QQQ', 'TLT'])
       .map((s) => s.toUpperCase())
-      .slice(0, 12);
-    const { start, end } = body;
-    const weightsInput = body.weights || {};
+      .slice(0, 20);
+    const start = body.start && String(body.start);
+    const end = body.end && String(body.end);
+    const method = body.method || 'equal_weight';
 
-    // fetch price history
-    const history: Series[] = await fetchHistory(tickers, start, end);
+    // 1) Fetch history (FMP -> Stooq fallback handled inside lib/prices)
+    const hist: Series[] = await fetchHistory(tickers, start, end);
 
-    // Build aligned date map (ascending)
-    const allDatesSet = new Set<string>();
-    for (const s of history) for (const b of s.bars) allDatesSet.add(b.date);
-    const allDates = Array.from(allDatesSet).sort((a, b) => (a < b ? -1 : 1));
-    if (allDates.length < 3) {
-      return NextResponse.json(
-        { error: 'No valid price data for chosen tickers/date range.' },
-        { status: 400 }
-      );
+    // Keep only those with data
+    const withData = hist.filter((s) => s.bars && s.bars.length >= 3);
+
+    if (withData.length === 0) {
+      // Don’t 400 – return a helpful shape so the UI can render gracefully
+      return NextResponse.json({
+        metrics: { sharpe: 0, sortino: 0, var: 0, cvar: 0, max_drawdown: 0 },
+        equityCurve: [], // client will show placeholder
+        weights: {},
+        usedTickers: [],
+        note: 'No valid price data for given tickers/date range.',
+      });
     }
 
-    // Normalize weights (equal weight default)
-    const w: Record<string, number> = {};
-    let sum = 0;
-    for (const sym of tickers) {
-      const val = Number(weightsInput[sym]);
-      if (Number.isFinite(val)) {
-        w[sym] = val;
-        sum += val;
-      }
-    }
-    if (sum <= 0) {
-      // equal weight
-      const ew = 1 / tickers.length;
-      for (const sym of tickers) w[sym] = ew;
-    } else {
-      // normalize
-      for (const sym of tickers) w[sym] = (w[sym] ?? 0) / sum;
-    }
+    // 2) Align by date & build portfolio equity
+    const { dates, map } = alignByDate(withData);
+    const { equity, weights } = toPortfolioEquity(map, method);
 
-    // Build close-by-date per symbol
-    const closesBySym: Record<string, number[]> = {};
-    for (const s of history) {
-      const map = new Map<string, number>();
-      for (const b of s.bars) map.set(b.date, b.close);
-      closesBySym[s.symbol] = allDates.map((d) => (map.has(d) ? (map.get(d) as number) : NaN));
-    }
+    // 3) Metrics
+    const metrics = statsFromEquity(equity);
 
-    // Portfolio equity curve (start at 1)
-    const equity: number[] = [];
-    let cur = 1;
-    equity.push(cur);
-
-    // Compute daily portfolio returns by weighted sum of each symbol’s daily return
-    // First, compute per-symbol daily returns arrays
-    const symbolReturns: Record<string, number[]> = {};
-    for (const sym of tickers) {
-      const cs = closesBySym[sym].filter((v) => Number.isFinite(v)) as number[];
-      // If a symbol has too few points, treat its returns as 0s (effectively remove)
-      if (cs.length < 3) {
-        symbolReturns[sym] = new Array(allDates.length - 1).fill(0);
-      } else {
-        // Rebuild aligned closes with NaN removed via backfill (simple approach)
-        const aligned = closesBySym[sym].slice();
-        // forward-fill simple
-        for (let i = 0; i < aligned.length; i++) {
-          if (!Number.isFinite(aligned[i]) && i > 0) aligned[i] = aligned[i - 1];
-        }
-        // back-fill head if needed
-        for (let i = 0; i < aligned.length; i++) {
-          if (!Number.isFinite(aligned[i])) aligned[i] = aligned.find(Number.isFinite) as number;
-        }
-        const rets = closesToReturns(aligned as number[]);
-        symbolReturns[sym] = rets;
-      }
-    }
-
-    const days = Math.min(...tickers.map((t) => symbolReturns[t].length));
-    const portRets: number[] = [];
-    for (let i = 0; i < days; i++) {
-      let r = 0;
-      for (const sym of tickers) {
-        r += (w[sym] ?? 0) * (symbolReturns[sym][i] ?? 0);
-      }
-      portRets.push(r);
-      cur = cur * (1 + r);
-      equity.push(cur);
-    }
-
-    if (portRets.length < 3) {
-      return NextResponse.json(
-        { error: 'No valid price data for chosen tickers/date range.' },
-        { status: 400 }
-      );
-    }
-
-    // Metrics (annualized)
-    const n = portRets.length;
-    const mean = portRets.reduce((a, b) => a + b, 0) / n;
-    const variance = portRets.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
-    const sigma = Math.sqrt(variance);
-
-    const downside = portRets.filter((r) => r < 0);
-    const dsd =
-      downside.length > 0
-        ? Math.sqrt(downside.reduce((a, r) => a + r ** 2, 0) / downside.length)
-        : 0;
-
-    const muA = mean * 252;
-    const sigA = sigma * Math.sqrt(252);
-    const dsdA = dsd * Math.sqrt(252);
-
-    const sharpe = sigA ? muA / sigA : 0;
-    const sortino = dsdA ? muA / dsdA : 0;
-
-    const q5 = percentile(portRets, 5); // 5th percentile of returns
-    const var95 = q5 < 0 ? -q5 : 0; // express as positive loss
-    const cvar95 = (() => {
-      const tail = portRets.filter((r) => r <= q5);
-      if (!tail.length) return 0;
-      const avg = tail.reduce((a, b) => a + b, 0) / tail.length;
-      return avg < 0 ? -avg : 0;
-    })();
-
-    const mdd = maxDrawdown(equity);
-
-    // Round all KPIs here (3 decimals)
-    const metrics = {
-      sharpe: r3(sharpe),
-      sortino: r3(sortino),
-      var: r3(var95),
-      cvar: r3(cvar95),
-      max_drawdown: r3(mdd),
-    };
-
-    // Simple equity curve downsample for the small sparkline (keep density modest)
-    const step = Math.max(1, Math.floor(equity.length / 200));
-    const equityCurve = equity.filter((_, i) => i % step === 0);
-
-    return NextResponse.json({ metrics, equityCurve });
+    // 4) Return curve as numbers (client renders against index)
+    return NextResponse.json({
+      metrics,
+      equityCurve: equity,    // array of cumulative values (1.0 start)
+      weights,
+      usedTickers: withData.map((s) => s.symbol),
+      dates,                  // handy if you want to label the x-axis later
+    });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || 'metrics error' }, { status: 500 });
   }
+}
+
+export async function GET() {
+  return NextResponse.json({
+    info: 'POST { tickers: string[], start?: "YYYY-MM-DD", end?: "YYYY-MM-DD" }',
+  });
 }

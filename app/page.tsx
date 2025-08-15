@@ -11,6 +11,7 @@ import NewsList from '@/components/NewsList';
 import { CardSkeleton, ChartSkeleton } from '@/components/LoadingSkeleton';
 import DateRangePicker from '@/components/DateRangePicker';
 import RiskReturnChart, { RiskPoint } from '@/components/RiskReturnChart';
+import EquityChart from '@/components/EquityChart';
 import { load as loadPersist, save as savePersist } from '@/lib/persist';
 
 type Metrics = {
@@ -26,7 +27,7 @@ type MacroMap = Record<string, number[]>;
 function toNumbers(values: Array<{ value: string } | { date: string; value: string }>): number[] {
   const out: number[] = [];
   for (const v of values as any[]) {
-    const s = String((v as any).value ?? '');
+    const s = String(v.value ?? '');
     if (!s || s === '.' || s.toLowerCase() === 'nan') continue;
     const n = parseFloat(s);
     if (Number.isFinite(n)) out.push(n);
@@ -49,7 +50,7 @@ function calcRange(preset: Exclude<Preset, 'CUSTOM'>) {
   return { start, end };
 }
 
-// Annualize mean/stdev and compute Sharpe (~0 RF)
+// Annualize mean/stdev and compute Sharpe (risk-free ~ 0 for simplicity)
 function annualize(returns: number[]) {
   const n = returns.length;
   if (!n) return { mu: 0, sigma: 0, sharpe: 0 };
@@ -73,7 +74,10 @@ export default function DashboardPage() {
   // Core state
   const [weights, setWeights] = useState<Record<string, number>>({});
   const [metrics, setMetrics] = useState<Metrics | null>(null);
-  const [equityCurve, setEquityCurve] = useState<{ x: number; y: number }[]>([]);
+  /** equity values for the chart */
+  const [equityCurve, setEquityCurve] = useState<number[]>([]);
+  /** matching ISO dates */
+  const [equityDates, setEquityDates] = useState<string[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>('');
   const [macro, setMacro] = useState<MacroMap>({});
@@ -111,7 +115,7 @@ export default function DashboardPage() {
     }
   }
 
-  // Metrics + Equity curve
+  // Metrics + Equity curve (now also keeps "dates" for x-axis)
   useEffect(() => {
     const ctrl = new AbortController();
     let mounted = true;
@@ -143,10 +147,13 @@ export default function DashboardPage() {
         if (!mounted) return;
 
         setMetrics(d.metrics ?? d);
+
         if (Array.isArray(d.equityCurve) && d.equityCurve.length > 0) {
-          setEquityCurve(d.equityCurve.map((val: number, idx: number) => ({ x: idx, y: val })));
+          setEquityCurve(d.equityCurve as number[]);
+          setEquityDates(Array.isArray(d.dates) ? d.dates : []);
         } else {
-          setEquityCurve([{ x: 0, y: 1 }, { x: 1, y: 1 }]);
+          setEquityCurve([]);
+          setEquityDates([]);
         }
       } catch (e: any) {
         if (e?.name !== 'AbortError' && mounted) setError(e.message || 'Metrics error');
@@ -183,8 +190,8 @@ export default function DashboardPage() {
         const map: MacroMap = {};
         if (Array.isArray(j?.data)) {
           for (const s of j.data) {
-            const id = String((s as any)?.id || '');
-            const arr = Array.isArray((s as any)?.observations) ? toNumbers((s as any).observations) : [];
+            const id = String(s?.id || '');
+            const arr = Array.isArray(s?.observations) ? toNumbers(s.observations) : [];
             if (id) map[id] = arr;
           }
         }
@@ -228,7 +235,7 @@ export default function DashboardPage() {
     })();
   }, [tickers.join(',')]);
 
-  // Risk–Return points from price history (respect dateRange)
+  // Risk–Return points from price history
   useEffect(() => {
     const ctrl = new AbortController();
     let mounted = true;
@@ -242,10 +249,9 @@ export default function DashboardPage() {
         });
         if (!r.ok) return;
         const j = await r.json();
-        const series = Array.isArray(j?.series) ? (j.series as Array<{ symbol: string; bars: { close: number }[] }>) : [];
-
+        const series = Array.isArray(j?.series) ? j.series : [];
         const points: RiskPoint[] = [];
-        for (const s of series) {
+        for (const s of series as Array<{ symbol: string; bars: { close: number }[] }>) {
           const closes = s.bars.map((b) => b.close).filter((n) => Number.isFinite(n));
           if (closes.length < 3) continue;
           const rets: number[] = [];
@@ -278,7 +284,9 @@ export default function DashboardPage() {
           <button
             key={v}
             className={`px-3 py-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
-              selectedPreset === v ? 'bg-blue-600 text-white' : 'bg-neutral-800 text-neutral-200 hover:bg-neutral-700'
+              selectedPreset === v
+                ? 'bg-blue-600 text-white'
+                : 'bg-neutral-800 text-neutral-200 hover:bg-neutral-700'
             }`}
             onClick={() => handlePresetClick(v)}
           >
@@ -314,14 +322,22 @@ export default function DashboardPage() {
             <pre className="text-xs overflow-auto max-h-60">{JSON.stringify(weights, null, 2)}</pre>
           </div>
           {error ? (
-            <div className="mt-4 rounded-lg border border-red-500 p-3 text-sm text-red-400 bg-red-950/30">{error}</div>
+            <div className="mt-4 rounded-lg border border-red-500 p-3 text-sm text-red-400 bg-red-950/30">
+              {error}
+            </div>
           ) : null}
         </div>
 
         {/* Right column */}
         <div className="col-span-12 md:col-span-9 space-y-4">
-          {loading ? <ChartSkeleton /> : <ChartContainer title="Portfolio Equity Curve" series={equityCurve} />}
+          {/* Equity curve (date-aware) */}
+          {loading ? (
+            <ChartSkeleton />
+          ) : (
+            <EquityChart title="Portfolio Equity Curve" values={equityCurve} dates={equityDates} />
+          )}
 
+          {/* KPIs */}
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
             <KpiCard label="Sharpe" value={loading ? '—' : metrics?.sharpe ?? '—'} />
             <KpiCard label="Sortino" value={loading ? '—' : metrics?.sortino ?? '—'} />
@@ -330,6 +346,7 @@ export default function DashboardPage() {
             <KpiCard label="Max DD" value={loading ? '—' : metrics?.max_drawdown ?? '—'} />
           </div>
 
+          {/* Diagnostics placeholder */}
           <div className="rounded-lg border p-4">
             <div className="font-medium mb-1">Diagnostics</div>
             <div className="text-sm text-neutral-400">
@@ -339,18 +356,25 @@ export default function DashboardPage() {
             </div>
           </div>
 
+          {/* Macro sparklines */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {['CPIAUCSL', 'UNRATE', 'FEDFUNDS'].map((id) => (
               <ChartContainer
                 key={id}
                 title={id}
-                series={macro[id] ? (macro[id].slice(-30).map((y, i) => ({ x: i, y })) as { x: number; y: number }[]) : []}
+                series={
+                  macro[id]
+                    ? (macro[id].slice(-30).map((y, i) => ({ x: i, y })) as { x: number; y: number }[])
+                    : []
+                }
               />
             ))}
           </div>
 
+          {/* Risk vs Return */}
           <RiskReturnChart points={riskPoints} />
 
+          {/* Fundamentals + News per ticker */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {tickers.map((s) => (
               <div key={`f-${s}`} className="space-y-4">
