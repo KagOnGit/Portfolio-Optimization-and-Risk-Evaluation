@@ -1,3 +1,4 @@
+// lib/prices.ts
 import { fetchWithBackoff } from './backoff';
 
 export type PriceBar = { date: string; open: number; high: number; low: number; close: number; volume: number };
@@ -7,6 +8,7 @@ export type Quote = { last: number | null; prevClose: number | null; changePct: 
 const STQ_DAILY = 'https://stooq.com/q/d/l/';
 const STQ_QUOTE = 'https://stooq.com/q/l/';
 
+/** Map user symbol -> Stooq symbol */
 export function toStooqSymbol(input: string): string {
   const s = input.trim().toUpperCase();
   if (s === 'BTC-USD' || s === 'BTCUSD') return 'btcusd';
@@ -14,10 +16,11 @@ export function toStooqSymbol(input: string): string {
   return `${s.toLowerCase()}.us`;
 }
 
+/** Fetch full daily CSV for a symbol and parse to bars */
 export async function fetchStooqDailyCSV(symbol: string): Promise<PriceBar[]> {
   const sto = toStooqSymbol(symbol);
   const url = `${STQ_DAILY}?s=${encodeURIComponent(sto)}&i=d`;
-  const res = await fetchWithBackoff(url, { cache: 'no-store' });
+  const res = await fetchWithBackoff(url, { cache: 'no-store' }, 3, 700);
   const text = await res.text();
   const lines = text.trim().split(/\r?\n/);
   const out: PriceBar[] = [];
@@ -37,6 +40,7 @@ export async function fetchStooqDailyCSV(symbol: string): Promise<PriceBar[]> {
   return out;
 }
 
+/** Batch history for several symbols */
 export async function fetchHistory(symbols: string[]): Promise<Series[]> {
   const results = await Promise.all(symbols.map(async s => {
     const bars = await fetchStooqDailyCSV(s);
@@ -45,45 +49,75 @@ export async function fetchHistory(symbols: string[]): Promise<Series[]> {
   return results;
 }
 
+/** Close-to-close returns */
 export function closesToReturns(closes: number[]): number[] {
   const r: number[] = [];
   for (let i = 1; i < closes.length; i++) r.push(closes[i] / closes[i-1] - 1);
   return r;
 }
 
-export async function fetchQuoteSnapshot(symbols: string[]): Promise<Record<string, Quote>> {
+/** Helper: fetch last two daily closes (fallback path) */
+async function fetchStooqDailyLastTwo(stoSymbol: string): Promise<{ last: number|null; prev: number|null }> {
+  const url = `${STQ_DAILY}?s=${encodeURIComponent(stoSymbol)}&i=d`;
+  const res = await fetchWithBackoff(url, { cache: 'no-store' }, 3, 700);
+  const text = await res.text();
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 3) return { last: null, prev: null };
+  const lastRow = lines[lines.length - 1].split(',').map(x=>x.trim());
+  const prevRow = lines[lines.length - 2].split(',').map(x=>x.trim());
+  const last = parseFloat(lastRow[4]);
+  const prev = parseFloat(prevRow[4]);
+  return {
+    last: Number.isFinite(last) ? last : null,
+    prev: Number.isFinite(prev) ? prev : null
+  };
+}
+
+/**
+ * Robust server-side snapshot:
+ * 1) Try lightweight quote CSV (may give only "close")
+ * 2) Always compute prevClose via daily CSV
+ * 3) Compute changePct when possible
+ */
+export async function fetchQuoteSnapshotServer(symbols: string[]): Promise<Record<string, Quote>> {
   const out: Record<string, Quote> = {};
-  await Promise.all(symbols.map(async sym => {
+  await Promise.all(symbols.map(async (sym) => {
+    const key = sym.toUpperCase();
     const sto = toStooqSymbol(sym);
     try {
+      // Attempt lightweight quote first
       const url = `${STQ_QUOTE}?s=${encodeURIComponent(sto)}&f=sd2t2ohlcv&h&e=csv`;
-      const res = await fetchWithBackoff(url, { cache: 'no-store' });
+      const res = await fetchWithBackoff(url, { cache: 'no-store' }, 3, 700);
       const text = await res.text();
       const lines = text.trim().split(/\r?\n/);
-      if (lines.length < 2) throw new Error('no rows');
-      const row = lines[1].split(',');
-      const close = parseFloat(row[6]);
-      if (Number.isFinite(close)) {
-        out[sym.toUpperCase()] = { last: close, prevClose: null, changePct: null };
+      if (lines.length >= 2) {
+        const row = lines[1].split(',');
+        const close = parseFloat(row[6]);
+        let last: number|null = Number.isFinite(close) ? close : null;
+
+        const d = await fetchStooqDailyLastTwo(sto);
+        const prevClose = d.prev;
+
+        let changePct: number|null = null;
+        if (last == null) last = d.last;
+        if (last != null && prevClose != null && prevClose !== 0) {
+          changePct = ((last - prevClose) / prevClose) * 100;
+        }
+
+        out[key] = { last, prevClose, changePct };
         return;
       }
-      throw new Error('bad close');
+      throw new Error('no rows');
     } catch {
+      // full daily fallback
       try {
-        const daily = await fetchStooqDailyCSV(sym);
-        if (daily.length >= 2) {
-          const last = daily[daily.length - 1].close;
-          const prev = daily[daily.length - 2].close;
-          out[sym.toUpperCase()] = {
-            last,
-            prevClose: prev,
-            changePct: prev === 0 ? 0 : ((last - prev) / prev) * 100
-          };
-        } else {
-          out[sym.toUpperCase()] = { last: null, prevClose: null, changePct: null };
-        }
+        const { last, prev } = await fetchStooqDailyLastTwo(sto);
+        const changePct = (last != null && prev != null && prev !== 0)
+          ? ((last - prev) / prev) * 100
+          : null;
+        out[key] = { last, prevClose: prev, changePct };
       } catch {
-        out[sym.toUpperCase()] = { last: null, prevClose: null, changePct: null };
+        out[key] = { last: null, prevClose: null, changePct: null };
       }
     }
   }));

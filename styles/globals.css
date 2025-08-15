@@ -2,5 +2,22 @@
 @tailwind components;
 @tailwind utilities;
 
-html { color-scheme: light dark; }
-body { @apply bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100; }
+/* ===== Endless Ticker Styles ===== */
+@keyframes scrollTicker {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); } /* move by exactly one set width */
+}
+
+.ticker-mask {
+  mask-image: linear-gradient(to right, transparent 0, black 24px, black calc(100% - 24px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0, black 24px, black calc(100% - 24px), transparent 100%);
+}
+
+.ticker-track {
+  display: inline-flex;
+  will-change: transform;
+  animation: scrollTicker var(--dur, 30s) linear infinite;
+}
+
+/* Optional: pause on hover */
+/* .ticker-track:hover { animation-play-state: paused; } */
