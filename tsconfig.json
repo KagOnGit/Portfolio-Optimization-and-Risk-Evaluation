@@ -14,7 +14,7 @@
     "baseUrl": ".",
     "paths": { "@/*": ["*"] },
     "typeRoots": ["./types", "./node_modules/@types"],
-    "types": ["jest"],              // ← keep only this
+    "types": ["jest"],
     "incremental": true,
     "resolveJsonModule": true,
     "isolatedModules": true,

@@ -1,114 +1,112 @@
+// components/TopTickerRibbon.tsx
 'use client';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { useEffect, useMemo, useState } from 'react';
-import { cachedJson } from '@/lib/cachedFetch';
+type Tkr = { symbol: string; last?: number | null; pct?: number | null };
 
-type Quote = { last: number | null; changePct: number | null };
-type Quotes = Record<string, Quote>;
-
-const DEFAULTS = ['SPY', 'QQQ', 'AAPL', 'MSFT', 'TLT', 'GLD', 'NVDA', 'GOOG'];
-
-function Row({
-  symbols,
-  quotes,
-  onSelect,
-}: {
-  symbols: string[];
-  quotes: Quotes;
-  onSelect?: (s: string) => void;
-}) {
-  return (
-    <>
-      {symbols.map((s) => {
-        const q = quotes[s];
-        const pct = typeof q?.changePct === 'number' ? q.changePct : null;
-        const last = typeof q?.last === 'number' ? q.last : null;
-        const color =
-          pct == null ? 'text-neutral-400'
-          : pct > 0     ? 'text-emerald-400'
-                        : 'text-rose-400';
-        return (
-          <button
-            key={`${s}-${pct ?? 'na'}`}
-            className="flex items-baseline gap-2 px-4 py-2 text-sm text-neutral-200 hover:text-white whitespace-nowrap"
-            onClick={() => onSelect?.(s)}
-            title={last != null ? `${s} • ${last.toFixed(2)}` : s}
-          >
-            <span className="font-medium">{s}</span>
-            <span className={`text-xs ${color}`}>
-              {pct == null ? '— %' : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`}
-            </span>
-          </button>
-        );
-      })}
-    </>
-  );
-}
+const POLL_MS = 30_000;       // fetch every 30s
+const SPEED_PX_S = 40;        // marquee speed
 
 export default function TopTickerRibbon({
+  tickers = ['SPY','QQQ','AAPL','MSFT','NVDA','TLT','GLD','GOOG'],
   onSelect,
-  tickers = DEFAULTS,
-  pollMs = 30_000,
-  speedSec = 40, // lower = faster
-}: {
-  onSelect?: (symbol: string) => void;
-  tickers?: string[];
-  pollMs?: number;
-  speedSec?: number;
-}) {
-  const [quotes, setQuotes] = useState<Quotes>({});
-  const symbols = useMemo(
-    () => Array.from(new Set(tickers.map((s) => s.toUpperCase()))),
-    [tickers.join(',')]
-  );
+}: { tickers?: string[]; onSelect?: (sym: string) => void }) {
+  const [data, setData] = useState<Tkr[]>(tickers.map(s => ({ symbol: s })));
+  const trackRef = useRef<HTMLDivElement>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const startedRef = useRef(false); // avoid duplicate intervals in dev StrictMode
 
-  async function load() {
+  async function pullOnce(symbols: string[]) {
     try {
-      const j = await cachedJson<{ quotes: Quotes }>('/api/prices/quote', {
-        method: 'POST',
-        body: { tickers: symbols },
-        ttl: 25_000,
-      });
-      setQuotes(j?.quotes || {});
+      const qs = encodeURIComponent(symbols.join(','));
+      const res = await fetch(`/api/prices/quote?symbols=${qs}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error('quote api failed');
+      const j = await res.json() as Record<string, { last: number|null; changePct: number|null }>;
+      const arr: Tkr[] = symbols.map(s => ({
+        symbol: s,
+        last: (j?.[s]?.last ?? null),
+        pct:  (j?.[s]?.changePct ?? null),
+      }));
+      setData(arr);
     } catch {
-      /* keep last values */
+      // keep last known; show dashes
     }
   }
 
   useEffect(() => {
-    let alive = true;
-    (async () => {
-      await load();
-      const id = setInterval(() => alive && load(), pollMs);
-      return () => clearInterval(id);
-    })();
-    return () => { alive = false; };
+    // one immediate pull
+    pullOnce(tickers);
+
+    // guard for dev double-invoke
+    if (startedRef.current) return;
+    startedRef.current = true;
+
+    // install interval
+    timerRef.current = setInterval(() => pullOnce(tickers), POLL_MS);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbols.join(','), pollMs]);
+  }, [tickers.join(',')]); // stable unless tickers list actually changes
+
+const items = useMemo(() => {
+    const fmtPct = (p?: number | null) =>
+      (p == null ? '— %' : `${p >= 0 ? '+' : ''}${p.toFixed(2)}%`);
+    const fmtPrice = (x?: number | null) => {
+      if (x == null) return '—';
+      const n = new Intl.NumberFormat(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(x);
+      return `$${n}`;
+    };
+    return data.map(d => ({
+      key: d.symbol,
+      node: (
+        <div
+          className="px-4 py-1 flex items-center gap-2 cursor-pointer select-none"
+          role={onSelect ? 'button' : undefined}
+          tabIndex={onSelect ? 0 : -1}
+          aria-label={onSelect ? `Select ${d.symbol}` : undefined}
+          onClick={onSelect ? () => onSelect(d.symbol) : undefined}
+          onKeyDown={onSelect ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(d.symbol); } } : undefined}
+        >
+          <span className="font-medium">{d.symbol}</span>
+          <span className="text-neutral-300 tabular-nums">{fmtPrice(d.last)}</span>
+          <span className={
+            d.pct == null ? 'text-neutral-400'
+            : d.pct >= 0 ? 'text-emerald-400' : 'text-red-400'
+          }>
+            {fmtPct(d.pct)}
+          </span>
+        </div>
+      )
+    }));
+  }, [data]);
+
+  // duplicate list for seamless loop
+  const doubled = useMemo(() => [...items, ...items], [items]);
 
   return (
-    <div className="sticky top-0 z-20 w-full border-b bg-neutral-950/95 backdrop-blur supports-[backdrop-filter]:bg-neutral-950/60">
-      <div className="mx-auto max-w-screen-2xl overflow-hidden">
-        <div
-          className="flex animate-ticker will-change-transform hover:[animation-play-state:paused]"
-          style={{
-            animationDuration: `${speedSec}s`,
-          }}
-        >
-          <Row symbols={symbols} quotes={quotes} onSelect={onSelect} />
-          {/* duplicate content to make the loop seamless */}
-          <Row symbols={symbols} quotes={quotes} onSelect={onSelect} />
-        </div>
+    <div className="relative w-full overflow-hidden border-b border-neutral-800">
+      <div
+        ref={trackRef}
+        className="flex whitespace-nowrap will-change-transform animate-marquee"
+        style={{
+          animationDuration: `${Math.max(
+            8,
+            (trackRef.current?.scrollWidth ?? 1000) / SPEED_PX_S
+          )}s`,
+        }}
+      >
+        {doubled.map((i, idx) => <div key={`${i.key}-${idx}`}>{i.node}</div>)}
       </div>
-
-      {/* Local keyframes (styled-jsx global) */}
-      <style jsx global>{`
-        @keyframes ticker-scroll {
+      <style jsx>{`
+        @keyframes marquee {
           0% { transform: translateX(0); }
           100% { transform: translateX(-50%); }
         }
-        .animate-ticker {
-          animation: ticker-scroll linear infinite;
+        .animate-marquee {
+          animation-name: marquee;
+          animation-timing-function: linear;
+          animation-iteration-count: infinite;
         }
       `}</style>
     </div>

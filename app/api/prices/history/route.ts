@@ -1,5 +1,6 @@
 // app/api/prices/history/route.ts
 import { NextResponse } from 'next/server';
+import { fetchHistory } from '@/lib/prices';
 
 type Body = {
   tickers?: string[];
@@ -7,39 +8,43 @@ type Body = {
   end?: string;
 };
 
-function genSeries(symbol: string, n = 252) {
-  // deterministic pseudo-random walk based on symbol hash
-  let seed = Array.from(symbol).reduce((a, c) => a + c.charCodeAt(0), 0);
-  function rnd() {
-    seed = (seed * 1664525 + 1013904223) % 2 ** 32;
-    return (seed / 2 ** 32) - 0.5;
-  }
-  const bars: { date: string; close: number }[] = [];
-  let price = 100;
-  const today = new Date();
-  for (let i = n - 1; i >= 0; i--) {
-    const d = new Date(today);
-    d.setDate(today.getDate() - i);
-    // ~1% daily vol synthetic series
-    const ret = rnd() * 0.02;
-    price = Math.max(1, price * (1 + ret));
-    bars.push({ date: d.toISOString().slice(0, 10), close: +price.toFixed(2) });
-  }
-  return { symbol, bars };
+function parseQuery(url: string) {
+  const u = new URL(url);
+  const qp = u.searchParams;
+  // support symbols=SPY,QQQ or symbols[]=SPY&symbols[]=QQQ
+  const list: string[] = [];
+  const multi = qp.getAll('symbols');
+  if (multi && multi.length > 1) list.push(...multi);
+  const one = qp.get('symbols');
+  if (one) list.push(...one.split(',').map(s => s.trim()));
+  const arr = Array.from(new Set(list.filter(Boolean).map(s => s.toUpperCase()))).slice(0, 20);
+  const start = qp.get('start') || undefined;
+  const end = qp.get('end') || undefined;
+  return { symbols: arr, start, end };
 }
 
 export async function POST(req: Request) {
-  let body: Body = {};
-  try { body = await req.json(); } catch {}
-  const tickers = (body.tickers?.length ? body.tickers : ['SPY', 'QQQ', 'TLT'])
-    .map(s => s.toUpperCase())
-    .slice(0, 12);
-
-  const series = tickers.map(t => genSeries(t, 300));
-  return NextResponse.json({ series });
+  try {
+    const body = (await req.json().catch(() => ({}))) as Body;
+    const symbols = Array.isArray(body.tickers) && body.tickers.length
+      ? Array.from(new Set(body.tickers.map(s => s.toUpperCase()))).slice(0, 20)
+      : ['SPY', 'QQQ', 'TLT'];
+    const start = body.start || undefined;
+    const end = body.end || undefined;
+    const series = await fetchHistory(symbols, start, end);
+    return NextResponse.json({ series }, { headers: { 'Cache-Control': 'no-store' } });
+  } catch (e: any) {
+    return NextResponse.json({ series: [], error: e?.message || 'history error' }, { status: 200 });
+  }
 }
 
-export async function GET() {
-  // convenience
-  return NextResponse.json({ info: 'POST { tickers: string[], start?: string, end?: string }' });
+export async function GET(req: Request) {
+  try {
+    const { symbols, start, end } = parseQuery(req.url);
+    const syms = symbols.length ? symbols : ['SPY', 'QQQ', 'TLT'];
+    const series = await fetchHistory(syms, start, end);
+    return NextResponse.json({ series }, { headers: { 'Cache-Control': 'no-store' } });
+  } catch (e: any) {
+    return NextResponse.json({ series: [], error: e?.message || 'history error' }, { status: 200 });
+  }
 }

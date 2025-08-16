@@ -1,113 +1,101 @@
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
 // app/api/news/[symbol]/route.ts
 import { NextResponse } from 'next/server';
 import { DEFAULT_FEEDS, SYMBOL_FEEDS, ALLOWED_HOSTS } from '@/lib/newsSources';
-import { parseRSS, fetchReadable, ParsedItem } from '@/lib/newsExtract';
+import { parseRSS, fetchReadable } from '@/lib/newsExtract';
 import { summarizeItems } from '@/lib/summarize';
+import { cachedJson } from '@/lib/cachedFetch';
 
-const UA =
-  process.env.SEC_USER_AGENT ||
-  'PortfolioEduBot/1.0 (contact: you@example.com)';
-
-function hostOf(u: string) {
+function parseSymbolFromUrl(url: string): string {
   try {
-    return new URL(u).host;
+    const u = new URL(url);
+    const parts = u.pathname.split('/');
+    const idx = parts.indexOf('news');
+    const sym = parts[idx + 1] || '';
+    return (sym || 'SPY').toUpperCase();
+  } catch {
+    return 'SPY';
+  }
+}
+
+function hostname(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
   } catch {
     return '';
   }
 }
 
-/** Fetch an RSS/Atom feed as TEXT (no JSON parsing) */
-async function fetchRSS(url: string): Promise<string> {
-  const res = await fetch(url, {
-    headers: { 'User-Agent': UA },
-    // Feeds change often; avoid stale caches
-    cache: 'no-store',
-  });
-  if (!res.ok) return '';
-  return await res.text();
+function dedupe(items: { title: string; url: string; source: string; createdAt?: string; summary?: string }[]) {
+  const seen = new Set<string>();
+  const out: typeof items = [];
+  for (const it of items) {
+    const key = `${it.title}\u0001${it.url}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(it);
+  }
+  return out;
 }
 
-export async function GET(
-  _req: Request,
-  { params }: { params: { symbol: string } }
-) {
-  const sym = (params.symbol || '').toUpperCase();
-  const feeds = [...(SYMBOL_FEEDS[sym] || []), ...DEFAULT_FEEDS];
-
+export async function GET(req: Request) {
   try {
-    // 1) Pull RSS feeds in parallel (as TEXT)
-    const rssTexts = await Promise.all(
-      feeds.map((f) => fetchRSS(f.url).catch(() => ''))
-    );
+    const symbol = parseSymbolFromUrl(req.url);
+    const feeds = [...(SYMBOL_FEEDS[symbol] || []), ...DEFAULT_FEEDS];
 
-    // 2) Parse items and keep reputable hosts
-    const parsedArrays = await Promise.all(
-      rssTexts.map((xml, i) =>
-        xml ? parseRSS(xml, feeds[i].name) : Promise.resolve<ParsedItem[]>([])
-      )
-    );
-
-    const items: ParsedItem[] = parsedArrays
-      .flat()
-      .filter((i) => ALLOWED_HOSTS.has(hostOf(i.url)))
-      .slice(0, 40); // cap
-
-    // 3) De-dup by URL/title (case-insensitive)
-    const seen = new Set<string>();
-    const dedup = items.filter((i) => {
-      const k = (i.title + '|' + i.url).toLowerCase();
-      if (seen.has(k)) return false;
-      seen.add(k);
-      return true;
-    });
-
-    // 4) Fetch full readable text for the top N recent (fallback to RSS summary)
-    const enriched: ParsedItem[] = await Promise.all(
-      dedup.slice(0, 18).map(async (it) => {
-        const body = await fetchReadable(it.url).catch(() => '');
-        return { ...it, summary: body || it.summary };
+    // fetch RSS XML in parallel with short TTL cache
+    const results = await Promise.all(
+      feeds.map(async (f) => {
+        try {
+          const xml = await cachedJson<string>(f.url, {
+            method: 'GET',
+            ttl: 60_000,
+            headers: { 'User-Agent': 'Mozilla/5.0 (PortfolioApp; like Gecko)' },
+          });
+          const items = await parseRSS(xml as unknown as string, f.name);
+          return items;
+        } catch {
+          return [];
+        }
       })
     );
 
-    // 5) Build a robust summary + bullets for display
-    const { summary, bullets } = summarizeItems(
-      enriched.map((e) => ({
-        title: e.title,
-        summary: e.summary || '',
-        url: e.url,
-        source: e.source,
-      })),
-      5
+    // flatten, filter by host, map, sort by recency
+    const merged = results.flat().filter(x => x.url && ALLOWED_HOSTS.has(hostname(x.url)));
+
+    const cleaned = dedupe(merged)
+      .sort((a, b) => (new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()))
+      .slice(0, 40);
+
+    // fetch readable text for top subset
+    const top = cleaned.slice(0, 18);
+    const readable = await Promise.all(
+      top.map(async (it) => ({ ...it, full: await fetchReadable(it.url) }))
     );
 
-    // 6) Return both the list (for detail cards) and the synthesized summary
-    return NextResponse.json(
-      {
-        symbol: sym,
-        updatedAt: new Date().toISOString(),
-        summary,
-        bullets,
-        items: enriched.map((e) => ({
-          title: e.title,
-          url: e.url,
-          source: e.source,
-          createdAt: e.createdAt,
-          // short excerpt for the card
-          excerpt: (e.summary || '').slice(0, 320),
-        })),
-      },
-      { headers: { 'Cache-Control': 'no-store' } }
-    );
+    // build summarize inputs (fallback to parsed description if no readable text)
+    const forSumm = readable.map(r => ({ title: r.title, summary: r.full || r.summary || '', url: r.url, source: r.source }));
+    const { summary, bullets } = summarizeItems(forSumm, 5);
+
+    // final items list with small excerpts
+    const items = cleaned.map(it => ({
+      title: it.title,
+      url: it.url,
+      source: it.source,
+      createdAt: it.createdAt,
+      excerpt: (it.summary || '').slice(0, 220)
+    }));
+
+    return NextResponse.json({
+      symbol,
+      updatedAt: new Date().toISOString(),
+      summary,
+      bullets,
+      items,
+    }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (e: any) {
-    return NextResponse.json(
-      {
-        symbol: sym,
-        summary: '',
-        bullets: [],
-        items: [],
-        error: e?.message || 'news-failed',
-      },
-      { status: 200 }
-    );
+    return NextResponse.json({ symbol: 'SPY', updatedAt: new Date().toISOString(), summary: '', bullets: [], items: [], error: e?.message || 'news error' }, { status: 200 });
   }
 }

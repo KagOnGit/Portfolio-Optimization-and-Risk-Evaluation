@@ -1,52 +1,52 @@
-// Lightweight Yahoo Finance helpers (no key). Cache aggressively server-side.
-import { cachedJson } from './cachedFetch';
+// Free Yahoo helpers (server-side). No API key required.
+import { cachedJson } from '@/lib/cachedFetch';
 
-type YNum = { raw?: number; fmt?: string };
 type QuoteSummary = {
   price?: {
-    marketCap?: YNum;
-    regularMarketPrice?: YNum;
+    marketCap?: { raw?: number };
+    regularMarketPrice?: { raw?: number };
+    symbol?: string;
   };
   summaryDetail?: {
-    trailingPE?: YNum;
-    forwardPE?: YNum;
-    dividendYield?: YNum; // fraction e.g. 0.015
-    beta?: YNum;
-    fiftyTwoWeekHigh?: YNum;
-    fiftyTwoWeekLow?: YNum;
+    trailingPE?: { raw?: number };
+    forwardPE?: { raw?: number };
+    dividendYield?: { raw?: number };
+    beta?: { raw?: number };
+    fiftyTwoWeekHigh?: { raw?: number };
+    fiftyTwoWeekLow?: { raw?: number };
   };
 };
 
-function buildURL(symbol: string) {
-  const mods = [
-    'price',
-    'summaryDetail',
-    'defaultKeyStatistics',
-  ].join('%2C');
-  return `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(symbol)}?modules=${mods}`;
-}
+export type Fundamentals = {
+  symbol: string;
+  marketCap: number | null;
+  pe: number | null;
+  fpe: number | null;
+  dividendYield: number | null;
+  beta: number | null;
+  high52w: number | null;
+  low52w: number | null;
+};
 
-export async function fetchFundamentalsYahoo(symbol: string) {
-  const url = buildURL(symbol);
-  const data = await cachedJson<any>(url, {
-    ttl: 6 * 60 * 60 * 1000, // 6h
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PortfolioApp/1.0)' }
-  });
-  const result: QuoteSummary | undefined =
-    data?.quoteSummary?.result?.[0] ?? undefined;
+export async function fetchYahooFundamentals(symbol: string): Promise<Fundamentals> {
+  const sym = symbol.toUpperCase();
+  const url = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(sym)}?modules=price,summaryDetail`;
+  const j = await cachedJson<{ quoteSummary?: { result?: QuoteSummary[] } }>(url, { ttl: 5 * 60_000 });
 
-  const sd = result?.summaryDetail;
-  const price = result?.price;
+  const r = j?.quoteSummary?.result?.[0] || {};
+  const sd = r.summaryDetail || {};
+  const price = r.price || {};
 
-  const fmtPct = (x?: number) => (typeof x === 'number' ? x * 100 : undefined);
+  const num = (x: any) => (typeof x?.raw === 'number' ? x.raw : (typeof x === 'number' ? x : null));
 
   return {
-    marketCap: price?.marketCap?.raw ?? null,
-    pe: sd?.trailingPE?.raw ?? null,
-    fwdPE: sd?.forwardPE?.raw ?? null,
-    dividendYieldPct: fmtPct(sd?.dividendYield?.raw) ?? null,
-    beta: sd?.beta?.raw ?? null,
-    week52High: sd?.fiftyTwoWeekHigh?.raw ?? null,
-    week52Low: sd?.fiftyTwoWeekLow?.raw ?? null,
+    symbol: sym,
+    marketCap: num(price.marketCap),
+    pe: num(sd.trailingPE),
+    fpe: num(sd.forwardPE),
+    dividendYield: num(sd.dividendYield),       // fraction (e.g., 0.015) — format as percent client-side
+    beta: num(sd.beta),
+    high52w: num(sd.fiftyTwoWeekHigh),
+    low52w: num(sd.fiftyTwoWeekLow),
   };
 }

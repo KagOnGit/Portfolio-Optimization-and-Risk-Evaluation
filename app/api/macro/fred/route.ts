@@ -1,34 +1,68 @@
 // app/api/macro/fred/route.ts
 import { NextResponse } from 'next/server';
+import { fetchFredSeries } from '@/lib/macro';
 
-type Body = { series?: string[]; start?: string; end?: string };
+ type Body = { series?: string[]; start?: string; end?: string };
 
-function synth(seriesId: string, n = 60) {
-  const out: { date: string; value: string }[] = [];
-  const today = new Date();
-  let base = seriesId === 'UNRATE' ? 4.0 : seriesId === 'FEDFUNDS' ? 3.5 : 260.0; // rough anchors
-  for (let i = n - 1; i >= 0; i--) {
-    const d = new Date(today);
-    d.setMonth(today.getMonth() - i);
-    // tiny drift
-    base += (Math.sin(i / 6) * 0.15);
-    out.push({ date: d.toISOString().slice(0, 10), value: base.toFixed(2) });
+async function fetchFredCsv(seriesId: string, start?: string, end?: string) {
+  try {
+    const url = `https://fred.stlouisfed.org/graph/fredgraph.csv?id=${encodeURIComponent(seriesId)}`;
+    const res = await fetch(url, { cache: 'no-store' });
+    const csv = await res.text();
+    const lines = csv.trim().split(/\r?\n/);
+    const out: { date: string; value: string }[] = [];
+    for (let i = 1; i < lines.length; i++) {
+      const [date, value] = lines[i].split(',');
+      if (!date) continue;
+      if (start && date < start) continue;
+      if (end && date > end) continue;
+      // keep raw string value to match client toNumbers()
+      out.push({ date, value });
+    }
+    return out;
+  } catch {
+    return [] as { date: string; value: string }[];
   }
-  return { id: seriesId, observations: out };
+}
+
+function parseQuery(url: string) {
+  const u = new URL(url);
+  const qp = u.searchParams;
+  const one = qp.get('series');
+  const series = one ? one.split(',').map(s => s.trim()).filter(Boolean) : ['CPIAUCSL','UNRATE','FEDFUNDS'];
+  const start = qp.get('start') || undefined;
+  const end = qp.get('end') || undefined;
+  return { series, start, end };
+}
+
+async function getData(ids: string[], start?: string, end?: string) {
+  const key = process.env.FRED_API_KEY || '';
+  if (key) {
+    const rs = await Promise.all(ids.map(id => fetchFredSeries(id, key, start, end)));
+    return rs.map(r => ({ id: r.id, observations: r.observations.map(o => ({ date: o.date, value: String(o.value) })) }));
+  }
+  // CSV fallback -> map to observations with string values
+  const rs = await Promise.all(ids.map(async id => ({ id, observations: await fetchFredCsv(id, start, end) })));
+  return rs;
 }
 
 export async function POST(req: Request) {
-  let body: Body = {};
-  try { body = await req.json(); } catch {}
-
-  const ids = (body.series?.length ? body.series : ['CPIAUCSL', 'UNRATE', 'FEDFUNDS']).slice(0, 10);
-  const data = ids.map(id => synth(id, 120));
-  return NextResponse.json({ data });
+  try {
+    const body = (await req.json().catch(() => ({}))) as Body;
+    const ids = (Array.isArray(body.series) && body.series.length ? body.series : ['CPIAUCSL','UNRATE','FEDFUNDS']).slice(0, 10);
+    const data = await getData(ids, body.start, body.end);
+    return NextResponse.json({ data }, { headers: { 'Cache-Control': 'no-store' } });
+  } catch (e: any) {
+    return NextResponse.json({ data: [], error: e?.message || 'fred error' }, { status: 200 });
+  }
 }
 
-export async function GET() {
-  return NextResponse.json({
-    info: 'POST { series: string[], start?: string, end?: string }',
-    example: { series: ['CPIAUCSL','UNRATE','FEDFUNDS'] }
-  });
+export async function GET(req: Request) {
+  try {
+    const { series, start, end } = parseQuery(req.url);
+    const data = await getData(series, start, end);
+    return NextResponse.json({ data }, { headers: { 'Cache-Control': 'no-store' } });
+  } catch (e: any) {
+    return NextResponse.json({ data: [], error: e?.message || 'fred error' }, { status: 200 });
+  }
 }

@@ -1,33 +1,36 @@
-// lib/newsSources.ts
-// Whitelisted, reputable feeds. No paywalls; stable RSS.
-// Extend per your needs, but keep to allowed hosts.
-
 export type Feed = { name: string; url: string };
-export type SymbolFeeds = Record<string, Feed[]>;
 
-export const DEFAULT_FEEDS: Feed[] = [
-  { name: 'Reuters Markets', url: 'https://www.reuters.com/markets/rss' },
-  { name: 'CNBC Markets',   url: 'https://www.cnbc.com/id/100003114/device/rss/rss.html' },
-];
-
-export const SYMBOL_FEEDS: SymbolFeeds = {
+// Symbol-specific feeds (optional)
+export const SYMBOL_FEEDS: Record<string, Feed[]> = {
   SPY: [
-    { name: 'Yahoo Finance: SPY', url: 'https://finance.yahoo.com/rss/headline?s=SPY' },
-    { name: 'Nasdaq: SPY',        url: 'https://www.nasdaq.com/feed/rssoutbound?symbol=SPY' },
+    { name: 'Yahoo Finance', url: 'https://feeds.finance.yahoo.com/rss/2.0/headline?s=SPY&region=US&lang=en-US' },
+    { name: 'Google News',   url: 'https://news.google.com/rss/search?q=SPY+stock+OR+ETF&hl=en-US&gl=US&ceid=US:en' },
   ],
   QQQ: [
-    { name: 'Yahoo Finance: QQQ', url: 'https://finance.yahoo.com/rss/headline?s=QQQ' },
-    { name: 'Nasdaq: QQQ',        url: 'https://www.nasdaq.com/feed/rssoutbound?symbol=QQQ' },
+    { name: 'Yahoo Finance', url: 'https://feeds.finance.yahoo.com/rss/2.0/headline?s=QQQ&region=US&lang=en-US' },
+    { name: 'Google News',   url: 'https://news.google.com/rss/search?q=QQQ+Nasdaq+100+ETF&hl=en-US&gl=US&ceid=US:en' },
   ],
   TLT: [
-    { name: 'Yahoo Finance: TLT', url: 'https://finance.yahoo.com/rss/headline?s=TLT' },
-    { name: 'Nasdaq: TLT',        url: 'https://www.nasdaq.com/feed/rssoutbound?symbol=TLT' },
+    { name: 'Yahoo Finance', url: 'https://feeds.finance.yahoo.com/rss/2.0/headline?s=TLT&region=US&lang=en-US' },
+    { name: 'Google News',   url: 'https://news.google.com/rss/search?q=TLT+Treasury+ETF&hl=en-US&gl=US&ceid=US:en' },
   ],
 };
 
+// Broad finance feeds used for any symbol
+export const DEFAULT_FEEDS: Feed[] = [
+  { name: 'Yahoo Finance Top', url: 'https://finance.yahoo.com/news/rssindex' },
+  { name: 'Google News Markets', url: 'https://news.google.com/rss/search?q=stock+market+OR+equities+OR+ETF&hl=en-US&gl=US&ceid=US:en' },
+];
+
+// Reputable hosts we’ll keep
 export const ALLOWED_HOSTS = new Set<string>([
-  'www.reuters.com',
-  'www.cnbc.com',
-  'finance.yahoo.com',
-  'www.nasdaq.com',
+  // majors
+  'finance.yahoo.com', 'news.yahoo.com',
+  'www.reuters.com', 'www.bloomberg.com', 'www.ft.com', 'www.wsj.com',
+  'www.cnbc.com', 'www.marketwatch.com', 'www.investors.com',
+  'www.seekingalpha.com', 'www.barrons.com',
+  // misc sources that show up in Google News/Yahoo feeds
+  'www.morningstar.com', 'www.fool.com', 'www.zacks.com',
+  'www.theguardian.com', 'www.nytimes.com', 'www.economist.com',
+  'www.kiplinger.com', 'www.forbes.com',
 ]);

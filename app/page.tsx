@@ -66,7 +66,8 @@ function annualize(returns: number[]) {
 }
 
 export default function DashboardPage() {
-  // Persisted selections
+// Persisted selections
+  const [mounted, setMounted] = useState(false);
   const [tickers, setTickers] = useState<string[]>(() => loadPersist('tickers', ['SPY', 'QQQ', 'TLT']));
   const [selectedPreset, setSelectedPreset] = useState<Preset>(() => loadPersist('preset', '1Y' as Preset));
   const [dateRange, setDateRange] = useState<{ start: string; end: string }>(() =>
@@ -89,7 +90,8 @@ export default function DashboardPage() {
   const [news, setNews] = useState<Record<string, any[]>>({});
   const [riskPoints, setRiskPoints] = useState<RiskPoint[]>([]);
 
-  // Persist whenever these change
+// Persist whenever these change
+  useEffect(() => setMounted(true), []);
   useEffect(() => savePersist('tickers', tickers), [tickers]);
   useEffect(() => savePersist('preset', selectedPreset), [selectedPreset]);
   useEffect(() => savePersist('dateRange', dateRange), [dateRange.start, dateRange.end]);
@@ -293,7 +295,11 @@ export default function DashboardPage() {
           />
           <div className="mt-4 rounded-lg border p-4">
             <div className="text-sm font-medium mb-2">Selected Tickers</div>
-            <div className="text-xs">{tickers.join(', ')}</div>
+            {mounted ? (
+              <div className="text-xs">{tickers.join(', ')}</div>
+            ) : (
+              <div className="text-xs">SPY, QQQ, TLT</div>
+            )}
           </div>
           <div className="mt-4 rounded-lg border p-4">
             <div className="text-sm font-medium mb-2">Weights</div>
@@ -434,12 +440,21 @@ export default function DashboardPage() {
           <RiskReturnChart points={riskPoints} />
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {tickers.map((s) => (
-              <div key={`f-${s}`} className="space-y-4">
-                {funda[s] ? <FundamentalsCard symbol={s} data={funda[s]} /> : <CardSkeleton />}
-                <NewsList items={news[s] || []} title={`${s} News`} />
-              </div>
-            ))}
+            {mounted ? (
+              tickers.map((s) => (
+                <div key={`f-${s}`} className="space-y-4">
+                  {funda[s] ? <FundamentalsCard symbol={s} data={funda[s]} /> : <CardSkeleton />}
+                  <NewsList items={news[s] || []} title={`${s} News`} />
+                </div>
+              ))
+            ) : (
+              ['SPY','QQQ','TLT'].map((s) => (
+                <div key={`f-skel-${s}`} className="space-y-4">
+                  <CardSkeleton />
+                  <div className="rounded-lg border p-4 text-sm text-neutral-500">Loading…</div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </div>
