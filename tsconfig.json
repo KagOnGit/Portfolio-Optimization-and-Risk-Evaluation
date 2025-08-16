@@ -12,7 +12,13 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "baseUrl": ".",
-    "paths": { "@/*": ["*"] },
+    "paths": {
+      "@/*": ["./*"],
+      "@components/*": ["components/*"],
+      "@app/*": ["app/*"],
+      "@lib/*": ["lib/*"],
+      "@api/*": ["app/api/*"]
+    },
     "typeRoots": ["./types", "./node_modules/@types"],
     "types": ["jest"],
     "incremental": true,

@@ -1,462 +1,299 @@
 // app/page.tsx
-'use client';
-import AllocationEditor from '@/components/AllocationEditor';
-import DownloadButtons from '@/components/DownloadButtons';
-import { useEffect, useMemo, useState } from 'react';
-import TopTickerRibbon from '@/components/TopTickerRibbon';
-import KpiCard from '@/components/KpiCard';
-import ControlPanel from '@/components/ControlPanel';
-import ChartContainer from '@/components/ChartContainer';
-import FundamentalsCard from '@/components/FundamentalsCard';
-import NewsList from '@/components/NewsList';
-import { CardSkeleton, ChartSkeleton } from '@/components/LoadingSkeleton';
-import DateRangePicker from '@/components/DateRangePicker';
-import RiskReturnChart, { RiskPoint } from '@/components/RiskReturnChart';
-import EquityChart from '@/components/EquityChart';
-import { load as loadPersist, save as savePersist } from '@/lib/persist';
-import { cachedJson } from '@/lib/cachedFetch';
+"use client";
 
-type Metrics = {
-  sharpe: number;
-  sortino: number;
-  var: number;
-  cvar: number;
-  max_drawdown: number;
+import { useMemo, useState } from "react";
+
+// tiny ui primitives (you have these)
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+
+// use components that actually exist in your repo
+import KpiCard from "@/components/KpiCard";
+import EquityChart from "@/components/EquityChart";
+
+// icons
+import {
+  BarChart3,
+  ChevronDown,
+  Globe,
+  Home,
+  LayoutDashboard,
+  LifeBuoy,
+  Settings,
+  Wallet,
+} from "lucide-react";
+
+/* =========================================================================
+   Market Mood Index (MMI) – Tickertape-inspired interactive gauge
+   ========================================================================= */
+
+type MoodZone = {
+  label: "Extreme Fear" | "Fear" | "Greed" | "Extreme Greed";
+  range: [number, number];          // inclusive
+  color: string;                    // arc color
+  description: string;              // tooltip text (static/safe)
+  anchor: "left" | "right";         // tooltip side hint
 };
 
-type MacroMap = Record<string, number[]>;
+const ZONES: MoodZone[] = [
+  {
+    label: "Extreme Fear",
+    range: [0, 30],
+    color: "#22c55e",
+    description:
+      "Extreme fear (&lt;30) suggests a good time to open fresh positions, as markets are likely to be oversold and might turn upwards.",
+    anchor: "left",
+  },
+  {
+    label: "Fear",
+    range: [30, 50],
+    color: "#86efac",
+    description:
+      "Fear zone suggests investors are cautious. The action to take depends on the MMI trajectory and macro backdrop.",
+    anchor: "left",
+  },
+  {
+    label: "Greed",
+    range: [50, 70],
+    color: "#f59e0b",
+    description:
+      "Greed zone suggests investors are chasing risk. Consider tighter risk management and watch for momentum slowdowns.",
+    anchor: "right",
+  },
+  {
+    label: "Extreme Greed",
+    range: [70, 100],
+    color: "#ef4444",
+    description:
+      "Extreme greed (&gt;70) suggests avoiding new risk as markets are overbought and likely to mean-revert.",
+    anchor: "right",
+  },
+];
 
-function toNumbers(values: Array<{ value: string } | { date: string; value: string }>): number[] {
-  const out: number[] = [];
-  for (const v of values as any[]) {
-    const s = String(v.value ?? '');
-    if (!s || s === '.' || s.toLowerCase() === 'nan') continue;
-    const n = parseFloat(s);
-    if (Number.isFinite(n)) out.push(n);
-  }
-  return out;
+function clampScore(n: number) {
+  return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-type Preset = '1Y' | '3Y' | '5Y' | 'MAX' | 'CUSTOM';
-function calcRange(preset: Exclude<Preset, 'CUSTOM'>) {
-  const today = new Date();
-  const end = today.toISOString().slice(0, 10);
-  let start: string;
-  if (preset === '1Y')
-    start = new Date(today.getFullYear() - 1, today.getMonth(), today.getDate()).toISOString().slice(0, 10);
-  else if (preset === '3Y')
-    start = new Date(today.getFullYear() - 3, today.getMonth(), today.getDate()).toISOString().slice(0, 10);
-  else if (preset === '5Y')
-    start = new Date(today.getFullYear() - 5, today.getMonth(), today.getDate()).toISOString().slice(0, 10);
-  else start = '1900-01-01';
-  return { start, end };
+// Convert degrees to SVG coordinates (center 150,150)
+function polar(deg: number, r: number) {
+  const rad = (deg * Math.PI) / 180;
+  return [150 + r * Math.cos(rad), 150 + r * Math.sin(rad)];
 }
 
-// Annualize mean/stdev and compute Sharpe (risk-free ~ 0 for simplicity)
-function annualize(returns: number[]) {
-  const n = returns.length;
-  if (!n) return { mu: 0, sigma: 0, sharpe: 0 };
-  const mean = returns.reduce((a, b) => a + b, 0) / n;
-  const variance = returns.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
-  const sigmaD = Math.sqrt(variance);
-  const muA = mean * 252;
-  const sigA = sigmaD * Math.sqrt(252);
-  const sharpe = sigA ? muA / sigA : 0;
-  return { mu: muA, sigma: sigA, sharpe };
+function arcPath(a0: number, a1: number, r: number) {
+  const [x0, y0] = polar(a0, r);
+  const [x1, y1] = polar(a1, r);
+  const large = Math.abs(a1 - a0) > 180 ? 1 : 0;
+  return `M ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1}`;
 }
 
-export default function DashboardPage() {
-// Persisted selections
-  const [mounted, setMounted] = useState(false);
-  const [tickers, setTickers] = useState<string[]>(() => loadPersist('tickers', ['SPY', 'QQQ', 'TLT']));
-  const [selectedPreset, setSelectedPreset] = useState<Preset>(() => loadPersist('preset', '1Y' as Preset));
-  const [dateRange, setDateRange] = useState<{ start: string; end: string }>(() =>
-    loadPersist('dateRange', calcRange('1Y'))
+function MoodGauge({
+  score = 55,
+  updatedText = "Updated 1 day ago",
+}: {
+  score?: number;
+  updatedText?: string;
+}) {
+  const [hovered, setHovered] = useState<MoodZone | null>(null);
+  const s = clampScore(score);
+  const angle = -120 + (240 * s) / 100; // -120..120
+  const active = useMemo(
+    () => ZONES.find((z) => s >= z.range[0] && s <= z.range[1]) || ZONES[1],
+    [s]
   );
 
-  // Core state
-  const [btDates, setBtDates] = useState<string[]>([]);
-  const [btEquity, setBtEquity] = useState<number[]>([]);
-  const [btWeights, setBtWeights] = useState<Record<string, number>>({});
-  const [editWeights, setEditWeights] = useState<Record<string, number>>({});
-  const [weights, setWeights] = useState<Record<string, number>>({});
-  const [metrics, setMetrics] = useState<Metrics | null>(null);
-  const [equityCurve, setEquityCurve] = useState<number[]>([]);
-  const [equityDates, setEquityDates] = useState<string[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string>('');
-  const [macro, setMacro] = useState<MacroMap>({});
-  const [funda, setFunda] = useState<Record<string, any>>({});
-  const [news, setNews] = useState<Record<string, any[]>>({});
-  const [riskPoints, setRiskPoints] = useState<RiskPoint[]>([]);
-
-// Persist whenever these change
-  useEffect(() => setMounted(true), []);
-  useEffect(() => savePersist('tickers', tickers), [tickers]);
-  useEffect(() => savePersist('preset', selectedPreset), [selectedPreset]);
-  useEffect(() => savePersist('dateRange', dateRange), [dateRange.start, dateRange.end]);
-
-  // Debounce “logical” changes (kept simple; memo == we only depend on value changes)
-  const debouncedTickers = useMemo(() => tickers, [tickers]);
-  const debouncedRange = useMemo(() => dateRange, [dateRange]);
-
-  // Ribbon selection
-  function handleRibbonSelect(sym: string) {
-    setTickers((prev) => {
-      const has = prev.includes(sym);
-      const next = has ? prev.filter((s) => s !== sym) : [sym, ...prev].slice(0, 6);
-      return Array.from(new Set(next));
-    });
-  }
-
-  async function runOptimize(userTickers: string[], method: string) {
-    try {
-      setError('');
-      const data = await cachedJson<any>('/api/portfolio/optimize', {
-        method: 'POST',
-        body: { tickers: userTickers, method },
-        ttl: 10 * 60_000,
-      });
-      setWeights(data.weights);
-    } catch (e: any) {
-      setError(e.message || 'Optimize error');
-    }
-  }
-
-  // Metrics + Equity curve (date-aware)
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      setLoading(true);
-      setError('');
-      try {
-        const d = await cachedJson<any>('/api/metrics', {
-          method: 'POST',
-          body: { tickers: debouncedTickers, start: debouncedRange.start, end: debouncedRange.end, weights },
-          ttl: 15 * 60_000,
-        });
-
-        if (!alive) return;
-        setMetrics(d.metrics ?? d);
-        if (Array.isArray(d.equityCurve) && d.equityCurve.length > 0) {
-          setEquityCurve(d.equityCurve as number[]);
-          setEquityDates(Array.isArray(d.dates) ? d.dates : []);
-        } else {
-          setEquityCurve([]);
-          setEquityDates([]);
-          if (!d.equityCurve?.length) {
-            setError('No valid price data for chosen tickers/date range. Try a wider date range like 1Y or MAX.');
-          }
-        }
-      } catch (e: any) {
-        if (!alive) return;
-        setError(e?.message || 'Metrics error');
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [debouncedTickers.join(','), debouncedRange.start, debouncedRange.end, weights]);
-
-  // Macro series
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const j = await cachedJson<any>('/api/macro/fred', {
-          method: 'POST',
-          body: { series: ['CPIAUCSL', 'UNRATE', 'FEDFUNDS'], start: debouncedRange.start, end: debouncedRange.end },
-          ttl: 6 * 60 * 60_000,
-        });
-        if (!alive) return;
-        const map: MacroMap = {};
-        if (Array.isArray(j?.data)) {
-          for (const s of j.data) {
-            const id = String(s?.id || '');
-            const arr = Array.isArray(s?.observations) ? toNumbers(s.observations) : [];
-            if (id) map[id] = arr;
-          }
-        }
-        setMacro(map);
-      } catch {
-        /* ignore */
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [debouncedRange.start, debouncedRange.end]);
-
-  // Fundamentals (first three to stay light)
-  useEffect(() => {
-    (async () => {
-      const out: Record<string, any> = {};
-      const first3 = debouncedTickers.slice(0, 3);
-      for (const s of first3) {
-        try {
-          const d = await cachedJson<any>(`/api/fundamentals/${s}`, { ttl: 12 * 60 * 60_000 });
-          out[s] = d;
-        } catch {}
-      }
-      setFunda(out);
-    })();
-  }, [debouncedTickers.join(',')]);
-
-  // News (first three)
-  useEffect(() => {
-    (async () => {
-      const m: Record<string, any[]> = {};
-      const first3 = debouncedTickers.slice(0, 3);
-      for (const s of first3) {
-        try {
-          const j = await cachedJson<any>(`/api/news/${s}`, { ttl: 60 * 60_000 });
-          m[s] = j?.items || [];
-        } catch {}
-      }
-      setNews(m);
-    })();
-  }, [debouncedTickers.join(',')]);
-
-  // Risk–Return points from price history
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const j = await cachedJson<any>('/api/prices/history', {
-          method: 'POST',
-          body: { tickers: debouncedTickers, start: debouncedRange.start, end: debouncedRange.end },
-          ttl: 30 * 60_000,
-        });
-        if (!alive) return;
-        const series = Array.isArray(j?.series) ? j.series : [];
-        const points: RiskPoint[] = [];
-        for (const s of series as Array<{ symbol: string; bars: { close: number }[] }>) {
-          const closes = s.bars.map((b) => b.close).filter((n) => Number.isFinite(n));
-          if (closes.length < 3) continue;
-          const rets: number[] = [];
-          for (let i = 1; i < closes.length; i++) rets.push(closes[i] / closes[i - 1] - 1);
-          const { mu, sigma, sharpe } = annualize(rets);
-          points.push({ x: sigma, y: mu, label: s.symbol, sharpe });
-        }
-        setRiskPoints(points);
-      } catch {
-        if (alive) setRiskPoints([]);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [debouncedTickers.join(','), debouncedRange.start, debouncedRange.end]);
-
-  // Preset button handler
-  function handlePresetClick(p: Exclude<Preset, 'CUSTOM'>) {
-    setSelectedPreset(p);
-    setDateRange(calcRange(p));
-  }
+  const segAngles = [
+    { a0: -120, a1: -60, zone: ZONES[0] },
+    { a0: -60, a1: 0, zone: ZONES[1] },
+    { a0: 0, a1: 60, zone: ZONES[2] },
+    { a0: 60, a1: 120, zone: ZONES[3] },
+  ] as const;
 
   return (
-    <div className="min-h-screen">
-      <TopTickerRibbon onSelect={handleRibbonSelect} />
+    <Card className="relative overflow-hidden bg-background/50 p-4 backdrop-blur">
+      <div className="mb-2 text-sm font-semibold">Market Mood Index</div>
 
-      {/* Presets + Custom Date */}
-      <div className="mx-auto max-w-screen-2xl px-6 pt-4 flex flex-wrap items-center gap-3">
-        {(['1Y', '3Y', '5Y', 'MAX'] as const).map((v) => (
-          <button
-            key={v}
-            className={`px-3 py-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${
-              selectedPreset === v ? 'bg-blue-600 text-white' : 'bg-neutral-800 text-neutral-200 hover:bg-neutral-700'
-            }`}
-            onClick={() => handlePresetClick(v)}
-          >
-            {v}
-          </button>
-        ))}
-        <div className="ml-auto">
-          <DateRangePicker
-            value={dateRange}
-            onChange={(rng) => {
-              setSelectedPreset('CUSTOM');
-              setDateRange(rng);
-            }}
+      <div className="relative mx-auto" style={{ width: 300, height: 180 }}>
+        <svg width="300" height="180" viewBox="0 0 300 180">
+          {/* base arc */}
+          <path
+            d={arcPath(-120, 120, 120)}
+            stroke="#2a2a2a"
+            strokeWidth="14"
+            fill="none"
+            strokeLinecap="round"
           />
-        </div>
+
+          {/* colored segments */}
+          {segAngles.map((seg, i) => (
+            <path
+              key={i}
+              d={arcPath(seg.a0, seg.a1, 120)}
+              stroke={seg.zone.color}
+              strokeWidth={hovered?.label === seg.zone.label ? 16 : 14}
+              fill="none"
+              strokeLinecap="round"
+              className="cursor-pointer transition-[stroke-width] duration-150"
+              onMouseEnter={() => setHovered(seg.zone)}
+              onMouseLeave={() => setHovered(null)}
+            />
+          ))}
+
+          {/* ticks every 30° */}
+          {[...Array(9)].map((_, i) => {
+            const a = -120 + i * 30;
+            const [x0, y0] = polar(a, 104);
+            const [x1, y1] = polar(a, 116);
+            return <line key={i} x1={x0} y1={y0} x2={x1} y2={y1} stroke="#333" strokeWidth="2" />;
+          })}
+
+          {/* needle */}
+          <g transform={`rotate(${angle} 150 150)`}>
+            <line x1="150" y1="150" x2="255" y2="150" stroke="#e5e7eb" strokeWidth="3" />
+            <circle cx="150" cy="150" r="5" fill="#e5e7eb" />
+          </g>
+
+          {/* score */}
+          <text
+            x="150"
+            y="165"
+            textAnchor="middle"
+            className="fill-emerald-300"
+            style={{ fontSize: 18, fontWeight: 700 }}
+          >
+            {s}
+          </text>
+        </svg>
+
+        {/* tooltip */}
+        {hovered ? (
+          <div
+            className={`absolute top-8 ${
+              hovered.anchor === "left" ? "left-2" : "right-2"
+            } max-w-[220px] rounded-md border border-neutral-800 bg-neutral-900/95 p-3 text-xs text-neutral-200 shadow-lg`}
+          >
+            <div className="mb-1 font-medium" style={{ color: hovered.color }}>
+              {hovered.label}
+            </div>
+            <div
+              className="text-neutral-300"
+              // static copy only; no user HTML
+              dangerouslySetInnerHTML={{ __html: hovered.description }}
+            />
+          </div>
+        ) : null}
       </div>
 
-      <div className="mx-auto max-w-screen-2xl p-6 grid grid-cols-12 gap-4">
-        {/* Left column */}
-        <div className="col-span-12 md:col-span-3">
-          <ControlPanel
-            onRun={(panelTickers: string[], method: string) => {
-              setTickers(panelTickers);
-              runOptimize(panelTickers, method);
-            }}
-          />
-          <div className="mt-4 rounded-lg border p-4">
-            <div className="text-sm font-medium mb-2">Selected Tickers</div>
-            {mounted ? (
-              <div className="text-xs">{tickers.join(', ')}</div>
-            ) : (
-              <div className="text-xs">SPY, QQQ, TLT</div>
-            )}
+      <div className="mt-1 flex items-center justify-between text-[11px] text-muted-foreground">
+        <span>
+          Zone: <span style={{ color: active.color }}>{active.label}</span>
+        </span>
+        <span>{updatedText}</span>
+      </div>
+    </Card>
+  );
+}
+
+/* =========================================================================
+   Page
+   ========================================================================= */
+
+export default function Page() {
+  // Replace with your computed MMI score when wired up
+  const moodScore = 55;
+
+  // Simple demo data for EquityChart so the page renders without API
+  const demoDates = Array.from({ length: 30 }, (_, i) => `2024-01-${String(i + 1).padStart(2, "0")}`);
+  const demoValues = demoDates.map((_, i) => 100 + Math.sin(i / 4) * 10 + i * 0.4);
+
+  return (
+    <div className="min-h-screen bg-black text-white">
+      <div className="grid lg:grid-cols-[280px_1fr]">
+        {/* Sidebar */}
+        <aside className="border-r bg-background/50 backdrop-blur">
+          <div className="flex h-16 items-center gap-2 border-b px-6">
+            <Wallet className="h-6 w-6" />
+            <span className="font-bold">Vaultify</span>
           </div>
-          <div className="mt-4 rounded-lg border p-4">
-            <div className="text-sm font-medium mb-2">Weights</div>
-            <pre className="text-xs overflow-auto max-h-60">{JSON.stringify(weights, null, 2)}</pre>
+          <div className="px-4 py-4">
+            <Input placeholder="Search" className="bg-background/50" />
           </div>
-          {error ? (
-            <div className="mt-4 rounded-lg border border-red-500 p-3 text-sm text-red-400 bg-red-950/30">
-              {error}
+          <nav className="space-y-2 px-2">
+            <Button variant="ghost" className="w-full justify-start gap-2">
+              <LayoutDashboard className="h-4 w-4" />
+              Dashboard
+            </Button>
+            <Button variant="ghost" className="w-full justify-start gap-2">
+              <BarChart3 className="h-4 w-4" />
+              Statistics &amp; Income
+            </Button>
+            <Button variant="ghost" className="w-full justify-start gap-2">
+              <Globe className="h-4 w-4" />
+              Market
+            </Button>
+            <Button variant="ghost" className="w-full justify-start gap-2">
+              <Home className="h-4 w-4" />
+              Funding
+            </Button>
+            <Button variant="ghost" className="w-full justify-start gap-2">
+              <Wallet className="h-4 w-4" />
+              Yield Vaults
+              <ChevronDown className="ml-auto h-4 w-4" />
+            </Button>
+            <Button variant="ghost" className="w-full justify-start gap-2">
+              <LifeBuoy className="h-4 w-4" />
+              Support
+            </Button>
+            <Button variant="ghost" className="w-full justify-start gap-2">
+              <Settings className="h-4 w-4" />
+              Settings
+            </Button>
+          </nav>
+        </aside>
+
+        {/* Main */}
+        <main className="p-6">
+          <div className="mb-6 flex items-center justify-between">
+            <div className="space-y-1">
+              <h1 className="text-2xl font-bold">Overview</h1>
+              <div className="text-sm text-muted-foreground">Aug 13, 2023 - Aug 18, 2023</div>
             </div>
-          ) : null}
-        </div>
-
-        {/* Right column */}
-        <div className="col-span-12 md:col-span-9 space-y-4">
-          {loading ? (
-            <ChartSkeleton />
-          ) : (
-            <EquityChart title="Portfolio Equity Curve" values={equityCurve} dates={equityDates} />
-          )}
-
-          {/* Downloads: equity & weights */}
-          <div className="flex flex-wrap items-center gap-2 -mt-2">
-            <button
-              className="px-2 py-1 rounded border text-xs hover:bg-neutral-800"
-              onClick={() => {
-                const rows = [['date', 'equity'], ...equityDates.map((d, i) => [d, String(equityCurve[i] ?? '')])];
-                const csv = rows.map(r => r.join(',')).join('\n');
-                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'equity_curve.csv';
-                a.click();
-                URL.revokeObjectURL(url);
-              }}
-            >
-              Download Equity CSV
-            </button>
-            <button
-              className="px-2 py-1 rounded border text-xs hover:bg-neutral-800"
-              onClick={() => {
-                const rows = [['symbol', 'weight']];
-                const keys = Object.keys(weights);
-                for (const k of keys) rows.push([k, String(weights[k])]);
-                const csv = rows.map(r => r.join(',')).join('\n');
-                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'weights.csv';
-                a.click();
-                URL.revokeObjectURL(url);
-              }}
-            >
-              Download Weights CSV
-            </button>
+            <Button variant="outline" className="gap-2">
+              Ethereum Network
+              <ChevronDown className="h-4 w-4" />
+            </Button>
           </div>
 
-          {/* Simple Allocation Editor (uses current weights) */}
-          {Object.keys(weights).length > 0 && (
-            <div className="rounded-lg border p-3">
-              <div className="text-sm font-medium mb-2">Manual Allocation</div>
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                {Object.entries(weights).map(([sym, w]) => (
-                  <label key={sym} className="text-xs flex items-center gap-2">
-                    <span className="w-10">{sym}</span>
-                    <input
-                      type="number"
-                      step="0.001"
-                      min="0"
-                      className="w-24 bg-transparent border rounded px-2 py-1"
-                      value={editWeights[sym] ?? w}
-                      onChange={(e) => {
-                        const val = Number(e.target.value);
-                        setEditWeights((prev) => ({ ...prev, [sym]: isFinite(val) ? val : 0 }));
-                      }}
-                    />
-                  </label>
-                ))}
-              </div>
-              <div className="mt-2 flex gap-2">
-                <button
-                  className="px-3 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-sm"
-                  onClick={() => {
-                    // normalize
-                    const sum = Object.values(editWeights).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
-                    if (sum > 0) {
-                      const norm: Record<string, number> = {};
-                      for (const k of Object.keys(editWeights)) norm[k] = (editWeights[k] || 0) / sum;
-                      setWeights(norm);
-                      setError('');
-                    }
-                  }}
-                >
-                  Apply Weights
-                </button>
-                <button
-                  className="px-3 py-1 rounded border text-sm"
-                  onClick={() => setEditWeights({})}
-                >
-                  Reset
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-            <KpiCard label="Sharpe" value={loading ? '—' : metrics?.sharpe ?? '—'} />
-            <KpiCard label="Sortino" value={loading ? '—' : metrics?.sortino ?? '—'} />
-            <KpiCard label="VaR(95%)" value={loading ? '—' : metrics?.var ?? '—'} />
-            <KpiCard label="CVaR(95%)" value={loading ? '—' : metrics?.cvar ?? '—'} />
-            <KpiCard label="Max DD" value={loading ? '—' : metrics?.max_drawdown ?? '—'} />
+          {/* KPI row — uses your KpiCard component */}
+          <div className="grid gap-4 md:grid-cols-3">
+            <KpiCard label="Your Balance" value="$74,892" />
+            <KpiCard label="Your Deposits" value="$54,892" />
+            <KpiCard label="Accrued Yield" value="$20,892" />
           </div>
 
-          <div className="rounded-lg border p-4">
-            <div className="font-medium mb-1">Diagnostics</div>
-            <div className="text-sm text-neutral-400">
-              First run for this selection. Metrics initialized.
-              <br />
-              Run at least twice to compare changes.
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {['CPIAUCSL', 'UNRATE', 'FEDFUNDS'].map((id) => (
-              <ChartContainer
-                key={id}
-                title={id}
-                series={
-                  macro[id]
-                    ? (macro[id].slice(-30).map((y, i) => ({ x: i, y })) as { x: number; y: number }[])
-                    : []
-                }
-              />
-            ))}
-          </div>
-
-          <RiskReturnChart points={riskPoints} />
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {mounted ? (
-              tickers.map((s) => (
-                <div key={`f-${s}`} className="space-y-4">
-                  {funda[s] ? <FundamentalsCard symbol={s} data={funda[s]} /> : <CardSkeleton />}
-                  <NewsList items={news[s] || []} title={`${s} News`} />
+          {/* General stats + Mood Gauge */}
+          <div className="mt-6 grid gap-4 xl:grid-cols-3">
+            <Card className="xl:col-span-2 bg-background/50 p-6 backdrop-blur">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-lg font-semibold">General Statistics</h2>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="ghost">Today</Button>
+                  <Button size="sm" variant="ghost">Last week</Button>
+                  <Button size="sm" variant="ghost">Last month</Button>
+                  <Button size="sm" variant="ghost">Last 6 month</Button>
+                  <Button size="sm" variant="ghost">Year</Button>
                 </div>
-              ))
-            ) : (
-              ['SPY','QQQ','TLT'].map((s) => (
-                <div key={`f-skel-${s}`} className="space-y-4">
-                  <CardSkeleton />
-                  <div className="rounded-lg border p-4 text-sm text-neutral-500">Loading…</div>
-                </div>
-              ))
-            )}
+              </div>
+
+              {/* Your EquityChart component */}
+              <EquityChart title="Portfolio Equity Curve" values={demoValues} dates={demoDates} />
+            </Card>
+
+            {/* Tickertape-like MMI Card */}
+            <MoodGauge score={moodScore} />
           </div>
-        </div>
+        </main>
       </div>
     </div>
   );
