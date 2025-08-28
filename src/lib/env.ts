@@ -3,10 +3,10 @@ import { z } from 'zod';
 
 export const env = createEnv({
   server: {
-    FRED_API_KEY: z.string().min(1),
-    ALPHAVANTAGE_API_KEY: z.string().min(1),
-    SEC_USER_AGENT: z.string().min(1),   // e.g., 'Aditya Singh adityasingh0929@gmail.com'
-    FMP_API_KEY: z.string().min(1),
+    FRED_API_KEY: z.string().min(1).optional().default('demo-key'),
+    ALPHAVANTAGE_API_KEY: z.string().min(1).optional().default('demo-key'),
+    SEC_USER_AGENT: z.string().min(1).optional().default('Demo User demo@example.com'),
+    FMP_API_KEY: z.string().min(1).optional().default('demo-key'),
   },
   client: {
     NEXT_PUBLIC_APP_NAME: z.string().default('Portfolio Optimizer'),

@@ -2,7 +2,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState, useMemo } from 'react';
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { optimizeRandomFrontier } from '@/lib/optimize';
 import { sampleWeightsWithBounds } from '@/lib/opt_constraints';
 import jsPDF from 'jspdf';
 import { Download } from 'lucide-react';
