@@ -13,7 +13,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="min-h-dvh bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors">
+      <body className="min-h-dvh bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 transition-colors text-[15px] md:text-[16px] leading-relaxed">
         <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
           <ReactQueryProvider>
             <div className="flex flex-col min-h-dvh max-w-7xl mx-auto">

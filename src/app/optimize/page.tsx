@@ -1,3 +1,4 @@
+import { pf2 } from '@/lib/format';
 'use client';
 import { useQuery } from '@tanstack/react-query';
 import { useState, useMemo } from 'react';
@@ -146,15 +147,15 @@ export default function OptimizePage() {
       <section className="card p-5">
         <h2 className="text-xl font-semibold mb-4">Portfolio Optimizer</h2>
         <div className="flex flex-wrap items-center gap-4 mb-4">
-          <label className="text-sm">Tickers (comma):</label>
-          <input className="border rounded px-2 py-1 w-[320px]" value={tickers} onChange={e=>setTickers(e.target.value)} placeholder="SPY,AGG,GLD"/>
-          <label className="text-sm">Risk-free (monthly):</label>
-          <input className="border rounded px-2 py-1 w-28" value={riskFree} onChange={e=>setRiskFree(e.target.value)} />
-          <label className="text-sm">Min weight:</label>
-          <input className="border rounded px-2 py-1 w-24" value={minW} onChange={e=>setMinW(e.target.value)} />
-          <label className="text-sm">Max weight:</label>
-          <input className="border rounded px-2 py-1 w-24" value={maxW} onChange={e=>setMaxW(e.target.value)} />
-          <button onClick={downloadCSV} className="border rounded px-3 py-1 ml-auto flex items-center gap-2">
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Tickers (comma):</label>
+          <input className="border rounded px-2 py-1 w-[320px] bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value={tickers} onChange={e=>setTickers(e.target.value)} placeholder="SPY,AGG,GLD"/>
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Risk-free (monthly):</label>
+          <input className="border rounded px-2 py-1 w-28 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value={riskFree} onChange={e=>setRiskFree(e.target.value)} />
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Min weight:</label>
+          <input className="border rounded px-2 py-1 w-24 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value={minW} onChange={e=>setMinW(e.target.value)} />
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Max weight:</label>
+          <input className="border rounded px-2 py-1 w-24 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value={maxW} onChange={e=>setMaxW(e.target.value)} />
+          <button onClick={downloadCSV} className="border rounded px-3 py-1 ml-auto flex items-center gap-2 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700">
             <Download className="w-4 h-4"/> CSV
           </button>
         </div>
@@ -166,12 +167,12 @@ export default function OptimizePage() {
           <div className="grid gap-6">
             <div>
               <h3 className="text-lg font-semibold mb-2">Efficient Frontier</h3>
-              <div className="h-64">
+              <div className="h-[24rem]">
                 <ResponsiveContainer width="100%" height="100%">
                   <ScatterChart data={calc.frontier}>
                     <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="risk" />
-                    <YAxis dataKey="ret" />
+                    <XAxis dataKey="risk" tick={{ fill: "currentColor", fontSize: 12 }} tickFormatter={(v)=>pf2.format(v)} label={{ value: "Risk (σ)", position: "insideBottom", offset: -6 }} />
+                    <YAxis dataKey="ret" tick={{ fill: "currentColor", fontSize: 12 }} tickFormatter={(v)=>pf2.format(v)} label={{ value: "Return (μ)", angle: -90, position: "insideLeft" }} />
                     <Tooltip 
                       formatter={(value, name) => [
                         typeof value === 'number' ? value.toFixed(4) : value, 
@@ -215,10 +216,10 @@ export default function OptimizePage() {
             </div>
             
             <div className="flex gap-2">
-              <button onClick={downloadCSV} className="border rounded px-3 py-1"><Download className="w-4 h-4 inline mr-1"/> CSV</button>
-              <button onClick={exportPDF} className="border rounded px-3 py-1">PDF</button>
-              <button onClick={savePortfolio} className="border rounded px-3 py-1">Save Portfolio</button>
-              <button onClick={loadList} className="border rounded px-3 py-1">Load List</button>
+              <button onClick={downloadCSV} className="border rounded px-3 py-1 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700"><Download className="w-4 h-4 inline mr-1"/> CSV</button>
+              <button onClick={exportPDF} className="border rounded px-3 py-1 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700">PDF</button>
+              <button onClick={savePortfolio} className="border rounded px-3 py-1 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700">Save Portfolio</button>
+              <button onClick={loadList} className="border rounded px-3 py-1 bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700">Load List</button>
             </div>
           </div>
         )}
