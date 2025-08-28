@@ -68,3 +68,7 @@ Use Vercel CLI: `vercel`, then `vercel --prod`.
 - **Charts**: Recharts
 - **Environment**: T3 Env
 - **Deployment**: Vercel
+
+## Financial Modeling Prep (FMP)
+- Env: `FMP_API_KEY`
+- Test: `/api/fmp/profile?symbol=AAPL`
