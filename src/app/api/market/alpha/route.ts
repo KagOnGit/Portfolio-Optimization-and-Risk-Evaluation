@@ -8,7 +8,8 @@ export async function GET(req: Request) {
   const fn = searchParams.get('function') || 'TIME_SERIES_MONTHLY_ADJUSTED';
   const symbol = searchParams.get('symbol') || 'SPY';
   try {
-    const data = await fetchAlphaVantage('query', { function: fn, symbol });
+    // DEMO HOOK
+    const data = (process.env.ALPHAVANTAGE_API_KEY ? await fetchAlphaVantage('query', { function: fn, symbol }) : await (await import('@/lib/api/fetchers')).demoAlpha());
     return NextResponse.json({ ok: true, data });
   } catch (e: unknown) {
     const error = e instanceof Error ? e.message : 'Unknown error';

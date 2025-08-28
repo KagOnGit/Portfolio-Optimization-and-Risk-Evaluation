@@ -125,6 +125,22 @@ export default function OptimizePage() {
     doc.save('portfolio-report.pdf');
   };
 
+  async function savePortfolio(){
+    if (!calc) return;
+    const name = prompt('Name this portfolio run (e.g., MaxSharpe SPY/AGG/GLD)');
+    if (!name) return;
+    const payload = { frontier: calc.frontier, best: calc.bestSharpe };
+    const res = await fetch('/api/portfolios', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ name, payload }) });
+    const j = await res.json();
+    alert(j.ok ? 'Saved!' : ('Save failed: '+j.error));
+  }
+
+  const [list,setList] = useState<Array<{ id: number; name: string; created_at: string; payload: { best: Record<string, number | string> } }>>([]);
+  async function loadList(){
+    const r = await fetch('/api/portfolios'); const j = await r.json();
+    if(j.ok) setList(j.data); else alert('Load failed: '+j.error);
+  }
+
   return (
     <main className="grid gap-6">
       <section className="card p-5">
@@ -199,7 +215,10 @@ export default function OptimizePage() {
             </div>
             
             <div className="flex gap-2">
+              <button onClick={downloadCSV} className="border rounded px-3 py-1"><Download className="w-4 h-4 inline mr-1"/> CSV</button>
               <button onClick={exportPDF} className="border rounded px-3 py-1">PDF</button>
+              <button onClick={savePortfolio} className="border rounded px-3 py-1">Save Portfolio</button>
+              <button onClick={loadList} className="border rounded px-3 py-1">Load List</button>
             </div>
           </div>
         )}
@@ -226,6 +245,13 @@ export default function OptimizePage() {
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section className="card p-5">
+        <h3 className="text-lg font-semibold mb-3">Saved Portfolios</h3>
+        <ul className="text-sm space-y-1">
+          {list.map((r)=> (<li key={r.id}><b>{r.name}</b> — {new Date(r.created_at).toLocaleString()} (<a className="underline" href="#" onClick={e=>{e.preventDefault(); alert(JSON.stringify(r.payload.best, null, 2));}}>view best</a>)</li>))}
+        </ul>
       </section>
     </main>
   );
