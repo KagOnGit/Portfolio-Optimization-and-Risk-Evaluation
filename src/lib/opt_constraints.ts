@@ -5,7 +5,7 @@ export function sampleWeightsWithBounds(mins:number[], maxs:number[]): number[] 
   const n = mins.length;
   // Start at lower bounds
   let w = mins.slice();
-  let remaining = 1 - w.reduce((a,b)=>a+b,0);
+  const remaining = 1 - w.reduce((a,b)=>a+b,0);
   if (remaining < -1e-9) {
     // infeasible
     const msg = 'Bounds infeasible: sum(mins) > 1';

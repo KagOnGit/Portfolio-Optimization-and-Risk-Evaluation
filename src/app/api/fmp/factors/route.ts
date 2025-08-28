@@ -7,7 +7,7 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const symbols = (searchParams.get('symbols') || 'SPY,AGG,GLD').split(',').map(s=>s.trim().toUpperCase()).slice(0,25);
   try {
-    const out:any[] = [];
+    const out: unknown[] = [];
     for (const sym of symbols) {
       const [profile, quote, km] = await Promise.all([
         fetchFMP(`profile/${sym}`),
@@ -27,7 +27,8 @@ export async function GET(req: Request) {
       });
     }
     return NextResponse.json({ ok:true, factors: out });
-  } catch (e:any) {
-    return NextResponse.json({ ok:false, error: e.message }, { status: 500 });
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : 'Unknown error';
+    return NextResponse.json({ ok:false, error: message }, { status: 500 });
   }
 }

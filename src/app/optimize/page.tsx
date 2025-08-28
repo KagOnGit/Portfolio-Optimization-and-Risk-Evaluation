@@ -56,9 +56,7 @@ export default function OptimizePage() {
     const maxVal = Number(maxW);
     const mins = Array.from({length:n},()=>minVal);
     const maxs = Array.from({length:n},()=>maxVal);
-    // generate a bunch of feasible weights and reuse existing evaluator
-    const base = optimizeRandomFrontier(prices, symbols, rf, 1); // grab mu/C build side effects
-    const { frontier: _f } = base;
+    // generate a bunch of feasible weights
     const extra:number = 3000;
     const frontier = [];
     let best = { risk: Infinity, ret: -Infinity, weights: {} as Record<string,number>, sharpe: -Infinity };
@@ -90,11 +88,11 @@ export default function OptimizePage() {
       const ret = dot(w, mu);
       const sharpe = (ret - rf) / (risk || 1e-8);
       const weights = Object.fromEntries(symbols.map((s,i)=>[s,w[i]]));
-      const pt:any = { risk, ret, weights, sharpe };
+      const pt = { risk, ret, weights, sharpe };
       frontier.push(pt);
       if (sharpe > best.sharpe) best = pt;
     }
-    frontier.sort((a:any,b:any)=>a.risk-b.risk);
+    frontier.sort((a,b)=>a.risk-b.risk);
     return { frontier, bestSharpe: best, symbols };
   }, [q.data, riskFree, minW, maxW]);
 
