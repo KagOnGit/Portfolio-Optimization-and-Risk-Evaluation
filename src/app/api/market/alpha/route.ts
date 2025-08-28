@@ -1,0 +1,16 @@
+import { NextResponse } from 'next/server';
+import { fetchAlphaVantage } from '@/lib/api/fetchers';
+
+export const revalidate = 3600;
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const fn = searchParams.get('function') || 'TIME_SERIES_MONTHLY_ADJUSTED';
+  const symbol = searchParams.get('symbol') || 'SPY';
+  try {
+    const data = await fetchAlphaVantage('query', { function: fn, symbol });
+    return NextResponse.json({ ok: true, data });
+  } catch (e:any) {
+    return NextResponse.json({ ok: false, error: e.message }, { status: 500 });
+  }
+}
