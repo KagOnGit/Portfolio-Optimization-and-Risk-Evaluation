@@ -1,5 +1,5 @@
-import { nf2 } from '@/lib/format';
 'use client';
+import { nf2 } from '@/lib/format';
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';

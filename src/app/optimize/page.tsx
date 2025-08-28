@@ -1,5 +1,5 @@
-import { pf2 } from '@/lib/format';
 'use client';
+import { pf2 } from '@/lib/format';
 import { useQuery } from '@tanstack/react-query';
 import { useState, useMemo } from 'react';
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
