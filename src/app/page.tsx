@@ -29,7 +29,10 @@ export default function Page() {
 
   // AlphaVantage data structure mapping
   const series = alpha.data?.data?.['Monthly Adjusted Time Series'] ?? {};
-  const alphaData = Object.entries(series).map(([date, v]: any)=>({ date, value: Number(v['5. adjusted close'])||0 })).reverse();
+  const alphaData = Object.entries(series).map(([date, v])=>({ 
+    date, 
+    value: Number((v as Record<string, string>)['5. adjusted close']) || 0 
+  })).reverse();
 
   return (
     <main className="grid gap-6">

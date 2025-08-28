@@ -10,7 +10,8 @@ export async function GET(req: Request) {
   try {
     const data = await fetchFRED(series, { units });
     return NextResponse.json({ ok: true, data });
-  } catch (e:any) {
-    return NextResponse.json({ ok: false, error: e.message }, { status: 500 });
+  } catch (e: unknown) {
+    const error = e instanceof Error ? e.message : 'Unknown error';
+    return NextResponse.json({ ok: false, error }, { status: 500 });
   }
 }
