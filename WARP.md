@@ -44,19 +44,21 @@ src/
 ```
 
 ### Data Sources & APIs
-The application integrates with three primary financial data sources:
+The application integrates with four primary financial data sources:
 
 1. **Alpha Vantage** (`fetchAlphaVantage`): Stock market data and time series
 2. **FRED API** (`fetchFRED`): Economic indicators and treasury data  
 3. **SEC EDGAR** (`fetchSEC`): Company filings and regulatory documents
+4. **Financial Modeling Prep** (`fetchFMP`): Company profiles, financial statements, and market data
 
 All API clients are centralized in `/src/lib/api/fetchers.ts` with built-in rate limiting and caching.
 
 ### Environment Variables
 Required environment variables (validated via Zod schemas in `env.ts`):
-- `ALPHA_VANTAGE_KEY`: API key from alphavantage.co
 - `FRED_API_KEY`: API key from FRED (Federal Reserve Economic Data)
-- `SEC_APP_NAME`: User identification for SEC API compliance (format: "Name email@domain.com")
+- `ALPHAVANTAGE_API_KEY`: API key from alphavantage.co
+- `SEC_USER_AGENT`: User identification for SEC API compliance (format: "Name email@domain.com")
+- `FMP_API_KEY`: API key from Financial Modeling Prep
 
 ### State Management Pattern
 - **Server State**: React Query handles API data fetching, caching, and synchronization
@@ -70,10 +72,11 @@ Required environment variables (validated via Zod schemas in `env.ts`):
 4. Data flows through Recharts components for visualization
 
 ### API Route Structure
-Planned API endpoints (currently implemented as client-side fetches):
-- `/api/market/alpha` - Alpha Vantage market data proxy
-- `/api/econ/fred` - FRED economic data proxy  
-- `/api/sec/filings` - SEC filings data proxy
+API endpoints (mix of implemented and planned):
+- `/api/market/alpha` - Alpha Vantage market data proxy (planned)
+- `/api/econ/fred` - FRED economic data proxy (planned)
+- `/api/sec/filings` - SEC filings data proxy (planned)
+- `/api/fmp/profile` - Financial Modeling Prep company profiles (implemented)
 
 ### Styling System
 - **Tailwind CSS v4** with inline theme configuration in `globals.css`
