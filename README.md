@@ -1,79 +1,147 @@
-# Portfolio Optimizer
+# 📈 Portfolio Optimizer (Flagship)
 
-AI-driven portfolio optimization & risk management web app built with Next.js, TypeScript, Tailwind, and Vercel. Integrates FRED, Alpha Vantage, and SEC EDGAR data to deliver interactive dashboards, advanced risk metrics, and multi-strategy portfolio insights.
+AI-driven portfolio optimization & risk management web app.  
+Built with **Next.js 15**, **TypeScript**, **Tailwind**, deployed on **Vercel**.
 
-## Features
+---
 
-- **Real-time Market Data**: Integration with Alpha Vantage for stock market data
-- **Economic Indicators**: FRED API integration for treasury yields and economic data
-- **SEC Filings**: Access to SEC EDGAR database for company filings
-- **Interactive Charts**: Recharts-powered visualizations
-- **Type-safe Environment**: T3 Env for validated environment variables
-- **Modern Stack**: Next.js 15, React Query, Tailwind CSS, TypeScript
+## ✨ Features
+- **Market Data** (Alpha Vantage: daily/weekly/monthly OHLCV)
+- **Economic Data** (FRED: CPI, GDP, Unemployment, Yields, Fed Funds)
+- **Factors** (FMP: P/E, Beta, Sector, Market Cap)
+- **Optimizer** (Efficient frontier, constraints, risk-parity, CSV/PDF export)
+- **Dark/Light Theme** toggle
+- **Responsive** modern UI
 
-## Quick Start
+---
 
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd portfolio-optimizer
-   ```
+## 🚀 Quick Start
+```bash
+cp .env.example .env.local   # fill keys
+pnpm i && pnpm dev
+```
 
-2. **Install dependencies**
-   ```bash
-   pnpm install
-   ```
+**Environment Variables:**
+- `FRED_API_KEY`: [Get from FRED](https://fred.stlouisfed.org/docs/api/api_key.html)
+- `ALPHAVANTAGE_API_KEY`: [Get from Alpha Vantage](https://www.alphavantage.co/support/#api-key)
+- `FMP_API_KEY`: [Get from Financial Modeling Prep](https://financialmodelingprep.com/developer/docs)
+- `SEC_USER_AGENT`: Your name and email for SEC API compliance
 
-3. **Set up environment variables**
-   ```bash
-   cp .env.example .env.local
-   ```
-   
-   Fill in your API keys:
-   - `ALPHA_VANTAGE_KEY`: Get from [Alpha Vantage](https://www.alphavantage.co/support/#api-key)
-   - `FRED_API_KEY`: Get from [FRED](https://fred.stlouisfed.org/docs/api/api_key.html)
-   - `SEC_APP_NAME`: Your name and email for SEC API compliance
+---
 
-4. **Run the development server**
-   ```bash
-   pnpm dev
-   ```
+## 📊 Pages & Features
 
-5. **Open [http://localhost:3000](http://localhost:3000)** to view the application
+### 🏠 **Dashboard** (`/`)
+- Tabbed interface for all modules
+- Embedded views: Market, Economic, Optimizer, Factors
+- Seamless navigation between data sources
 
-## Available Scripts
+### 📈 **Market Data** (`/market`)
+- Real-time stock prices from Alpha Vantage
+- Daily/Weekly/Monthly frequency toggle
+- Interactive charts with Recharts
+- Symbol search and historical data
 
-- `pnpm dev` - Start development server
-- `pnpm build` - Build for production
-- `pnpm start` - Start production server
-- `pnpm lint` - Run ESLint
-- `pnpm typecheck` - Run TypeScript type checking
+### 🏛️ **Economic Data** (`/econ`)
+- Federal Reserve Economic Data (FRED)
+- Key indicators: CPI, GDP, Unemployment, Treasury Yields
+- Fed Funds Rate tracking
+- Time series visualizations
 
-## API Endpoints
+### ⚡ **Portfolio Optimizer** (`/optimize`)
+- **Constrained optimization** with min/max weight bounds
+- **Efficient frontier** visualization (3000+ portfolio samples)
+- **Short selling** support (negative min weights)
+- **Risk metrics**: Sharpe ratio, volatility, returns
+- **Export capabilities**: CSV weights, PDF reports
+- Real-time optimization with scatter plot visualization
 
-- `/api/market/alpha` - Alpha Vantage market data
-- `/api/econ/fred` - FRED economic data
-- `/api/sec/filings` - SEC filings data
+### 🔍 **Factors Analysis** (`/factors`)
+- Company fundamentals from Financial Modeling Prep
+- Beta, P/E ratios, sector classification, market cap
+- Multi-symbol analysis (up to 25 symbols)
+- Decision support for portfolio construction
 
-## Deploy
+---
 
-Use Vercel CLI: `vercel`, then `vercel --prod`.
+## 🎨 Design & UX
+- **Dark/Light Theme** with system preference detection
+- **Responsive layout** optimized for all screen sizes
+- **Modern UI** with Tailwind CSS and custom components
+- **Navigation**: Clean header with tabbed dashboard interface
+- **Typography**: Optimized for financial data readability
 
-## Tech Stack
+---
 
+## 🛠️ Tech Stack
 - **Framework**: Next.js 15 (App Router)
-- **Language**: TypeScript
-- **Styling**: Tailwind CSS
-- **State Management**: React Query + Zustand
-- **Charts**: Recharts
-- **Environment**: T3 Env
-- **Deployment**: Vercel
+- **Language**: TypeScript with strict type checking
+- **Styling**: Tailwind CSS v4 + next-themes
+- **State**: React Query (@tanstack/react-query) for server state
+- **Charts**: Recharts for financial visualizations
+- **UI Components**: Headless UI, Heroicons
+- **PDF Export**: jsPDF for report generation
+- **Environment**: T3 Env for type-safe config
+- **Deployment**: Vercel with automatic deployments
 
-## Financial Modeling Prep (FMP)
-- Env: `FMP_API_KEY`
-- Test: `/api/fmp/profile?symbol=AAPL`
+---
 
-## Constrained Optimization
-- Use Min/Max weight fields on /optimize (negative min enables shorting)
-- Factors table from FMP (Beta, P/E, Sector) for decision support
-- Export CSV/PDF from the UI
+## 🔧 API Architecture
+- **Alpha Vantage**: `/api/market/alpha` - Stock market data
+- **FRED**: `/api/econ/fred` - Economic indicators
+- **FMP**: `/api/fmp/factors` - Company fundamentals
+- **SEC**: `/api/sec/filings` - Regulatory filings
+- **Caching**: Built-in revalidation with Next.js
+- **Rate Limiting**: Optimized API call patterns
+
+---
+
+## 📦 Scripts
+```bash
+pnpm dev          # Development server
+pnpm build        # Production build
+pnpm start        # Production server
+pnpm lint         # ESLint checking
+pnpm typecheck    # TypeScript validation
+```
+
+---
+
+## 🚀 Deployment
+**Live Demo**: Deployed on Vercel
+
+```bash
+vercel --prod     # Deploy to production
+```
+
+**Features**:
+- Automatic deployments from Git
+- Environment variable management
+- Serverless functions for API routes
+- Global CDN for optimal performance
+
+---
+
+## 📈 Portfolio Optimization Features
+
+### **Constrained Optimization**
+- Set individual asset weight bounds (min/max)
+- Support for **short selling** (negative minimum weights)
+- **3000+ random portfolios** for robust frontier generation
+- Real-time constraint validation and feasibility checking
+
+### **Risk Analysis**
+- **Sharpe ratio optimization** for risk-adjusted returns
+- **Efficient frontier** visualization with scatter plots
+- **Correlation analysis** via covariance matrix calculations
+- **Monte Carlo sampling** for portfolio weight generation
+
+### **Export & Reporting**
+- **CSV export**: Portfolio weights and allocations
+- **PDF reports**: Complete optimization summary with jsPDF
+- **Interactive charts**: Hover tooltips and zoom capabilities
+- **Real-time updates**: Instant recalculation on parameter changes
+
+---
+
+*Built with ❤️ using modern web technologies*
