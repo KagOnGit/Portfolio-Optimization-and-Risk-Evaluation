@@ -72,3 +72,8 @@ Use Vercel CLI: `vercel`, then `vercel --prod`.
 ## Financial Modeling Prep (FMP)
 - Env: `FMP_API_KEY`
 - Test: `/api/fmp/profile?symbol=AAPL`
+
+## Constrained Optimization
+- Use Min/Max weight fields on /optimize (negative min enables shorting)
+- Factors table from FMP (Beta, P/E, Sector) for decision support
+- Export CSV/PDF from the UI
